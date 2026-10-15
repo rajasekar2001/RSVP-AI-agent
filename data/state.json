@@ -1,0 +1,61 @@
+{
+  "agent": {
+    "name": "RSVP agent",
+    "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.",
+    "language": "English",
+    "voice": "Shreya",
+    "built": true,
+    "fixed_plus_ones": true
+  },
+  "knowledge": [],
+  "webhook": {
+    "url": "",
+    "enabled": false
+  },
+  "contacts": [
+    {
+      "name": "Ramesh",
+      "phone": "+919000000001",
+      "status": "Ready",
+      "rsvp": "",
+      "guests": ""
+    },
+    {
+      "name": "Ananya",
+      "phone": "+919000000002",
+      "status": "Ready",
+      "rsvp": "",
+      "guests": ""
+    },
+    {
+      "name": "Karthik",
+      "phone": "+919000000003",
+      "status": "Ready",
+      "rsvp": "",
+      "guests": ""
+    }
+  ],
+  "tests": [
+    {
+      "id": 1,
+      "title": "Happy path",
+      "description": "Says yes, brings one guest, gives the name",
+      "status": "ready",
+      "time": ""
+    },
+    {
+      "id": 2,
+      "title": "Caller says no",
+      "description": "Declines, agent thanks them and ends the call",
+      "status": "ready",
+      "time": ""
+    },
+    {
+      "id": 3,
+      "title": "Two plus ones",
+      "description": "Collect and save both guest names",
+      "status": "ready",
+      "time": ""
+    }
+  ]
+}
