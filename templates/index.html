@@ -51,7 +51,7 @@
           <div class="card-head"><button id="testAgentTitle" class="card-title-btn" type="button"><b>Test Agent</b></button><div class="card-actions"><button id="newTestBtn" type="button" title="New test">＋</button><button id="historyBtn" type="button" title="Show/hide transcript">◷</button><button id="expandBtn" type="button" title="Expand tester">◫</button></div></div>
           <div class="mode-tabs" id="modeTabs"><button class="active" data-mode="voice" type="button">Voice</button><button data-mode="chat" type="button">Chat</button><button data-mode="phone" type="button">Phone</button></div>
           <div class="meta">Setup &nbsp;&nbsp; English &nbsp;&nbsp; Shreya &nbsp;&nbsp; <code>first_name = Ramesh</code></div>
-          <div id="phoneSetup" class="phone-setup hidden"><label>Phone number (demo)</label><input id="phoneNumber" value="+91 90000 00001" placeholder="+91 90000 00001"><p class="muted">Phone mode is simulated locally. Real Campaign uses Exotel through this same FastAPI server.</p></div>
+          <div id="phoneSetup" class="phone-setup hidden"><label>Phone number (demo)</label><input id="phoneNumber" value="+91 90000 00001" placeholder="+91 90000 00001"><p class="muted">Phone mode is simulated locally. Phone mode is simulated locally. Real Campaign uses Sarvam Voice Agents Instant Outbound API.</p></div>
           <div class="caller"><small>AGENT</small><h3 id="callStatus">Will call Ramesh</h3></div>
           <div class="call-circle"><button id="startCall" type="button">☎ Start Call</button></div>
           <div id="miniTranscript" class="mini-transcript"></div>
@@ -74,9 +74,9 @@
     </section>
 
     <section class="panel" id="campaigns">
-      <div class="section-title"><div><small>OUTBOUND</small><h2>RSVP campaign</h2></div><div style="display:flex;gap:8px"><button id="runDemoCampaign" class="ghost">▶ Browser Demo</button><button id="runCampaign" class="black">☎ Real Campaign</button></div></div>
+      <div class="section-title"><div><small>OUTBOUND</small><h2>RSVP campaign</h2><small style="display:block;margin-top:4px">Sarvam Voice Agents for real calls</small></div><div style="display:flex;gap:8px"><button id="runDemoCampaign" class="ghost">▶ Browser Demo</button><button id="runCampaign" class="black">☎ Real Campaign</button></div></div>
       <div class="campaign-tools"><label class="upload-btn">＋ Import CSV<input type="file" id="contactsFile" accept=".csv"></label><button id="webhookBtn" class="ghost">⌁ Configure webhook</button></div>
-      <p class="muted">CSV columns: <code>name,phone</code>. Browser Demo runs locally. Real Campaign uses Exotel + realtime AI in this same FastAPI process. Your public WSS URL should point to /media.</p>
+      <p class="muted">CSV columns: <code>name,phone</code>. Browser Demo runs locally. Real Campaign uses Sarvam Voice Agents. Configure a committed Sarvam agent, telephony connection, outbound phone number, workspace API key, and this app’s public HTTPS URL.</p><p id="sarvamStatus" class="muted">Checking Sarvam configuration…</p>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th>RSVP</th><th>Guests</th></tr></thead><tbody id="contactsBody"></tbody></table></div>
     </section>
   </div>

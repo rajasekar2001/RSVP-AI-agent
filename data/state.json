@@ -14,22 +14,24 @@
   },
   "contacts": [
     {
-      "name": "Ramesh",
-      "phone": "+919000000001",
-      "status": "Ready",
+      "name": "Menaka",
+      "phone": "+918608003966",
+      "status": "Completed",
+      "rsvp": "Yes",
+      "guests": "Raja, Sekar",
+      "attempt_id": "b14e650d-c8c5-46e4-a3f6-0ab1b21d2f00",
+      "call_status": "calling"
+    },
+    {
+      "name": "Raja",
+      "phone": "+916381825818",
+      "status": "Calling",
       "rsvp": "",
       "guests": ""
     },
     {
-      "name": "Ananya",
-      "phone": "+919000000002",
-      "status": "Ready",
-      "rsvp": "",
-      "guests": ""
-    },
-    {
-      "name": "Karthik",
-      "phone": "+919000000003",
+      "name": "Ganesun",
+      "phone": "+918148171649",
       "status": "Ready",
       "rsvp": "",
       "guests": ""
@@ -53,7 +55,7 @@
     {
       "id": 3,
       "title": "Two plus ones",
-      "description": "Collect and save both guest names",
+      "description": "Collected and saved both guest names",
       "status": "ready",
       "time": ""
     }
