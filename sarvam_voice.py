@@ -1,95 +1,48 @@
 
 import os
 import re
+import logging
 from urllib.parse import urlparse, quote
 
 import requests
 from dotenv import load_dotenv
 
-
-# --------------------------------------------------
-# LOAD ENVIRONMENT VARIABLES
-# --------------------------------------------------
-
-# For local development, read the .env file.
-# On Render, configure values in the Environment tab.
 load_dotenv()
 
-SARVAM_API_BASE = os.getenv(
-    "SARVAM_API_BASE",
-    "https://apps.sarvam.ai"
-).strip().rstrip("/")
-
-SARVAM_API_KEY = os.getenv(
-    "SARVAM_API_KEY", ""
-).strip()
-
-SARVAM_ORG_ID = os.getenv(
-    "SARVAM_ORG_ID", ""
-).strip()
-
-SARVAM_WORKSPACE_ID = os.getenv(
-    "SARVAM_WORKSPACE_ID", ""
-).strip()
-
-SARVAM_APP_ID = os.getenv(
-    "SARVAM_APP_ID", ""
-).strip()
-
-SARVAM_APP_VERSION = os.getenv(
-    "SARVAM_APP_VERSION", "1"
-).strip()
-
-SARVAM_CONNECTION_ID = os.getenv(
-    "SARVAM_CONNECTION_ID", ""
-).strip()
-
-SARVAM_PHONE_NUMBER = os.getenv(
-    "SARVAM_PHONE_NUMBER", ""
-).strip()
-
-PUBLIC_BASE_URL = os.getenv(
-    "PUBLIC_BASE_URL", ""
-).strip().rstrip("/")
-
-SARVAM_WEBHOOK_TOKEN = os.getenv(
-    "SARVAM_WEBHOOK_TOKEN", ""
-).strip()
+logger = logging.getLogger("rsvp.sarvam")
 
 
-# --------------------------------------------------
-# VALIDATE PHONE NUMBER
-# --------------------------------------------------
+def setting(name, default=""):
+    return os.getenv(name, default).strip()
 
-def normalize_e164(phone: str) -> str:
-    """
-    Validate international E.164 phone numbers.
 
-    Example:
-        +919876543210
-    """
+SARVAM_API_BASE = setting(
+    "SARVAM_API_BASE", "https://apps.sarvam.ai"
+).rstrip("/")
 
-    value = re.sub(
-        r"[\s().-]",
-        "",
-        str(phone or "").strip()
-    )
+SARVAM_API_KEY = setting("SARVAM_API_KEY")
+SARVAM_ORG_ID = setting("SARVAM_ORG_ID")
+SARVAM_WORKSPACE_ID = setting("SARVAM_WORKSPACE_ID")
+SARVAM_APP_ID = setting("SARVAM_APP_ID")
+SARVAM_APP_VERSION = setting("SARVAM_APP_VERSION")
+SARVAM_CONNECTION_ID = setting("SARVAM_CONNECTION_ID")
+SARVAM_PHONE_NUMBER = setting("SARVAM_PHONE_NUMBER")
+PUBLIC_BASE_URL = setting("PUBLIC_BASE_URL").rstrip("/")
+SARVAM_WEBHOOK_TOKEN = setting("SARVAM_WEBHOOK_TOKEN")
+
+
+def normalize_e164(phone):
+    value = re.sub(r"[\s().-]", "", str(phone or "").strip())
 
     if not re.fullmatch(r"\+[1-9]\d{7,14}", value):
         raise ValueError(
-            "Invalid phone number. "
-            "Use E.164 format, for example +919876543210."
+            "Invalid phone number. Use +919876543210 format."
         )
 
     return value
 
 
-# --------------------------------------------------
-# VALIDATE SARVAM CONFIGURATION
-# --------------------------------------------------
-
 def validate_config():
-
     required = {
         "SARVAM_API_KEY": SARVAM_API_KEY,
         "SARVAM_ORG_ID": SARVAM_ORG_ID,
@@ -102,99 +55,73 @@ def validate_config():
     }
 
     missing = [
-        name
-        for name, value in required.items()
+        key for key, value in required.items()
         if not value or value.lower().startswith(
-            ("your_", "paste_")
+            ("your_", "paste_", "replace_")
         )
     ]
 
     if missing:
         raise RuntimeError(
-            "Missing Sarvam configuration: "
-            + ", ".join(missing)
+            "Missing settings: " + ", ".join(missing)
+        )
+
+    if not re.fullmatch(r"[1-9]\d*", SARVAM_APP_VERSION):
+        raise RuntimeError(
+            "SARVAM_APP_VERSION must match an actual "
+            "committed Sarvam agent version."
         )
 
     if not SARVAM_API_KEY.isascii():
-        raise RuntimeError(
-            "SARVAM_API_KEY contains non-ASCII characters."
-        )
+        raise RuntimeError("Invalid API key characters.")
 
-    if any(char.isspace() for char in SARVAM_API_KEY):
-        raise RuntimeError(
-            "SARVAM_API_KEY contains whitespace."
-        )
+    if any(c.isspace() for c in SARVAM_API_KEY):
+        raise RuntimeError("API key contains whitespace.")
 
     if any(
-        char in SARVAM_API_KEY
-        for char in ("\\", "[", "]", "(", ")", '"')
+        c in SARVAM_API_KEY
+        for c in ("\\", "[", "]", "(", ")", '"')
     ):
-        raise RuntimeError(
-            "SARVAM_API_KEY contains copied formatting characters."
-        )
+        raise RuntimeError("API key contains invalid formatting.")
 
-    if not re.fullmatch(
-        r"[1-9]\d*",
-        SARVAM_APP_VERSION
-    ):
-        raise RuntimeError(
-            "SARVAM_APP_VERSION must be a positive integer."
-        )
+    normalize_e164(SARVAM_PHONE_NUMBER)
 
-    for label, value in (
+    for name, value in (
         ("SARVAM_API_BASE", SARVAM_API_BASE),
         ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
     ):
         parsed = urlparse(value)
-
         if (
             parsed.scheme not in ("http", "https")
             or not parsed.netloc
+            or "\\" in value
             or "[" in value
             or "]" in value
-            or "\\" in value
         ):
-            raise RuntimeError(
-                f"{label} must be a valid plain URL."
-            )
+            raise RuntimeError(f"Invalid {name}")
 
-    if (
-        PUBLIC_BASE_URL
-        == "https://your-app.onrender.com"
-    ):
+    if not PUBLIC_BASE_URL.startswith("https://"):
         raise RuntimeError(
-            "PUBLIC_BASE_URL is still a placeholder."
+            "PUBLIC_BASE_URL must be a public HTTPS URL."
         )
 
-    normalize_e164(SARVAM_PHONE_NUMBER)
+    if "your-app.onrender.com" in PUBLIC_BASE_URL:
+        raise RuntimeError(
+            "Replace the placeholder Render URL."
+        )
 
     return True
 
 
 def sarvam_configured():
-    """
-    Checks only local configuration.
-    Does not verify Sarvam authentication.
-    """
-
     try:
-        validate_config()
-        return True
-
-    except (RuntimeError, ValueError):
+        return validate_config()
+    except (ValueError, RuntimeError):
         return False
 
 
-# --------------------------------------------------
-# DASHBOARD CONFIGURATION SUMMARY
-# --------------------------------------------------
-
 def config_summary():
-    """
-    Return non-secret configuration information.
-    Never return the API key.
-    """
-
+    # Safe values only. Never reveal API key or webhook token.
     return {
         "configured": sarvam_configured(),
         "org_id": SARVAM_ORG_ID,
@@ -205,213 +132,144 @@ def config_summary():
         "agent_phone_number": SARVAM_PHONE_NUMBER,
         "public_base_url": PUBLIC_BASE_URL,
         "note": (
-            "Configured means environment variables "
-            "are present and locally valid. "
-            "It does not confirm API authentication."
+            "Real calls use this Sarvam app_id and "
+            "committed app_version, not local Genie instructions."
         ),
     }
 
 
-# --------------------------------------------------
-# READ SARVAM ERROR RESPONSE SAFELY
-# --------------------------------------------------
-
 def get_sarvam_error(response):
-    """
-    Extract error details returned by Sarvam.
-    Do not include authentication headers or secrets.
-    """
-
     try:
         body = response.json()
-
     except ValueError:
-        return (
-            "Sarvam returned a non-JSON error response."
-        )
+        return "Non-JSON response from Sarvam"
 
     if not isinstance(body, dict):
-        return "Unexpected Sarvam error response."
+        return "Unexpected response from Sarvam"
 
-    error = body.get("error", {})
+    error = body.get("error", body.get("detail", body))
 
     if isinstance(error, dict):
-        message = error.get("message", "")
-        error_data = error.get("data", {})
+        message = str(error.get("message", ""))
+        extra = error.get("data") or {}
+        details = (
+            str(extra.get("details", ""))
+            if isinstance(extra, dict) else ""
+        )
+        return " | ".join(
+            x for x in (message, details) if x
+        )[:500]
 
-        if isinstance(error_data, dict):
-            details = error_data.get("details", "")
-        else:
-            details = ""
-
-        code = error.get("code", "")
-
-        parts = [
-            str(item)
-            for item in (message, details)
-            if item
-        ]
-
-        if code:
-            parts.append(f"Code: {code}")
-
-        if parts:
-            return " | ".join(parts)[:1000]
-
-    detail = body.get("detail") or body.get("message")
-
-    if detail:
-        return str(detail)[:1000]
-
-    return "No additional error details returned."
+    return str(error)[:500]
 
 
-# --------------------------------------------------
-# START REAL SARVAM OUTBOUND CALL
-# --------------------------------------------------
-
-def start_sarvam_outbound(
-    phone: str,
-    contact_name: str
-):
+def start_sarvam_outbound(phone: str, contact_name: str):
     """
-    Starts an outbound call through Sarvam Voice Agents.
+    Launch a call using the exact committed Sarvam
+    agent identified by SARVAM_APP_ID and VERSION.
 
-    Called by the FastAPI RSVP campaign endpoint.
+    Note: Greeting and Instructions must be edited
+    inside this agent on the Sarvam platform.
     """
-
     validate_config()
 
     user_phone = normalize_e164(phone)
+    agent_phone = normalize_e164(SARVAM_PHONE_NUMBER)
 
-    agent_phone = normalize_e164(
-        SARVAM_PHONE_NUMBER
-    )
-
-    app_version = int(SARVAM_APP_VERSION)
-
-    # Official Sarvam Voice Agents Instant Outbound API.
     url = (
-        f"{SARVAM_API_BASE}"
-        f"/api/outbounds/v1"
+        f"{SARVAM_API_BASE}/api/outbounds/v1"
         f"/orgs/{SARVAM_ORG_ID}"
         f"/workspaces/{SARVAM_WORKSPACE_ID}"
-        f"/outbounds"
+        "/outbounds"
     )
 
-    # Sarvam calls this URL after the attempt finishes.
     webhook_url = (
         f"{PUBLIC_BASE_URL}/api/sarvam/webhook"
     )
 
-    # Only use this if app.py verifies the same token.
     if SARVAM_WEBHOOK_TOKEN:
         webhook_url += (
-            "?token="
-            + quote(SARVAM_WEBHOOK_TOKEN, safe="")
+            "?token=" + quote(SARVAM_WEBHOOK_TOKEN, safe="")
         )
 
     payload = {
         "app_config": {
             "app_id": SARVAM_APP_ID,
-            "app_version": app_version,
+            "app_version": int(SARVAM_APP_VERSION),
             "connection_config": {
                 "connection_id": SARVAM_CONNECTION_ID,
                 "agent_phone_number": agent_phone,
             },
         },
-
         "user_config": {
             "user_phone_number": user_phone,
         },
-
         "webhook_config": {
             "url": webhook_url,
             "metadata": {
-                "contact_name": str(
-                    contact_name or ""
-                ).strip(),
+                "contact_name": str(contact_name or "").strip(),
                 "user_phone_number": user_phone,
                 "source": "rsvp-fastapi",
             },
         },
     }
 
-    headers = {
-        "X-API-Key": SARVAM_API_KEY,
-        "Content-Type": "application/json",
-    }
+    # Report exactly which agent version is requested.
+    # Never log secret API credentials.
+    logger.warning(
+        "Starting Sarvam RSVP call: "
+        "app_id=%s version=%s contact=%s",
+        SARVAM_APP_ID,
+        SARVAM_APP_VERSION,
+        contact_name,
+    )
 
-    # Send request to Sarvam.
     try:
         response = requests.post(
             url,
-            headers=headers,
+            headers={
+                "X-API-Key": SARVAM_API_KEY,
+                "Content-Type": "application/json",
+            },
             json=payload,
             timeout=30,
         )
-
-    except requests.Timeout as exc:
-        raise RuntimeError(
-            "Sarvam API request timed out "
-            "after 30 seconds."
-        ) from exc
-
     except requests.RequestException as exc:
         raise RuntimeError(
-            "Could not connect to Sarvam API: "
-            f"{type(exc).__name__}"
+            "Sarvam network error: "
+            + type(exc).__name__
         ) from exc
 
-    # Preserve actual Sarvam error details.
     if not response.ok:
-
-        error_message = get_sarvam_error(response)
-
-        if response.status_code == 401:
-            raise RuntimeError(
-                "Sarvam HTTP 401 Unauthorized: "
-                + error_message
-            )
-
-        if response.status_code == 403:
-            raise RuntimeError(
-                "Sarvam HTTP 403 Forbidden: "
-                + error_message
-            )
-
-        if response.status_code == 422:
-            raise RuntimeError(
-                "Sarvam HTTP 422 Invalid configuration: "
-                + error_message
-            )
-
         raise RuntimeError(
             f"Sarvam HTTP {response.status_code}: "
-            + error_message
+            + get_sarvam_error(response)
         )
 
-    # Parse successful response.
     try:
         data = response.json()
-
     except ValueError as exc:
         raise RuntimeError(
-            "Sarvam returned an invalid JSON response."
+            "Sarvam returned invalid JSON."
         ) from exc
 
     if not isinstance(data, dict):
-        raise RuntimeError(
-            "Sarvam returned an unexpected JSON format."
-        )
+        raise RuntimeError("Unexpected Sarvam response.")
 
     attempt_id = data.get("attempt_id")
 
     if not attempt_id:
         raise RuntimeError(
-            "Sarvam did not return attempt_id. "
-            "Check the response format and outbound API."
+            "Sarvam did not return an attempt_id."
         )
+
+    logger.warning(
+        "Sarvam call accepted: attempt_id=%s "
+        "app_id=%s version=%s",
+        attempt_id,
+        SARVAM_APP_ID,
+        SARVAM_APP_VERSION,
+    )
 
     return {
         "attempt_id": attempt_id,

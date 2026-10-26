@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import io
+import hmac
 import json
 import os
 import re
@@ -13,7 +14,7 @@ from openpyxl import load_workbook
 import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -593,35 +594,77 @@ async def sarvam_config_status():
     return config_summary()
 
 
+
 @app.post("/api/campaign/real/run")
 async def real_campaign():
     if not sarvam_configured():
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Sarvam real calling is not configured. Add SARVAM_API_KEY, SARVAM_ORG_ID, "
-                "SARVAM_WORKSPACE_ID, SARVAM_APP_ID, SARVAM_APP_VERSION, "
-                "SARVAM_CONNECTION_ID, SARVAM_PHONE_NUMBER and PUBLIC_BASE_URL."
-            ),
+            detail="Sarvam configuration is incomplete."
         )
 
-    # Do not reset Calling/Starting/Failed/No answer contacts; prevent accidental redials.
     state = load_state()
-    if any(c.get("status") in {"Calling", "Starting"} for c in state["contacts"]):
-        return {"ok": False, "message": "A real call is already in progress. Wait for its completion webhook."}
-    nxt = get_next_real_contact(state)
-    if not nxt:
-        return {"ok": True, "finished": True, "message": "No Ready contacts. Use the browser campaign/reset or upload contacts to prepare a new campaign."}
+
+    if not state.get("contacts"):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload contacts before starting calls."
+        )
+
+    active = next(
+        (
+            contact
+            for contact in state["contacts"]
+            if contact.get("status") in {"Starting", "Calling"}
+        ),
+        None
+    )
+
+    if active:
+        return {
+            "ok": True,
+            "already_running": True,
+            "finished": False,
+            "contact": active.get("name"),
+            "attempt_id": active.get("attempt_id"),
+            "message": "Waiting for the current call to finish."
+        }
+
+    next_contact = get_next_real_contact(state)
+
+    if not next_contact:
+        return {
+            "ok": True,
+            "finished": True,
+            "message": "No Ready contacts remain."
+        }
+
     try:
-        result = await asyncio.to_thread(start_real_contact_call, nxt)
+        result = await asyncio.to_thread(
+            start_real_contact_call,
+            next_contact
+        )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if result is None:
-        return {"ok": False, "message": "Contact was already reserved."}
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc)
+        ) from exc
+
+    if not result:
+        return {
+            "ok": True,
+            "already_running": True,
+            "finished": False,
+            "message": "Call already reserved. Refresh the dashboard."
+        }
+
     return {
-        "ok": True, "finished": False, "provider": "sarvam",
-        "contact": nxt["name"], "phone": nxt["phone"],
-        "attempt_id": result.get("attempt_id"), "status": result.get("status"),
+        "ok": True,
+        "finished": False,
+        "contact": next_contact.get("name"),
+        "phone": next_contact.get("phone"),
+        "attempt_id": result.get("attempt_id"),
+        "status": result.get("status", "calling")
     }
 
 
@@ -713,165 +756,128 @@ async def reset():
     return {"ok": True}
 
 
-def agent_reply(state, message, session):
-    """
-    RSVP browser-demo conversation.
 
-    Stages:
-      opening -> rsvp -> guest_count -> guest_names
-      -> guest_names_more -> done
-    """
+def agent_reply(state, message, session):
+    """RSVP conversation with final confirmation."""
 
     spoken = str(message or "").strip()
     m = spoken.lower()
     stage = session.get("stage", "opening")
     name = session.get("name", "there")
 
-    def reply(text, next_stage, done=False, result=None):
+    def respond(text, next_stage, done=False, result=None):
         session["stage"] = next_stage
-
         output = {
             "reply": text,
             "stage": next_stage,
             "done": done,
         }
-
         if result is not None:
             output["result"] = result
-
         return output
 
-    def completed(text, rsvp, guests):
-        session["rsvp"] = rsvp
-        session["guest_names"] = guests
+    def matches(pattern):
+        return re.search(pattern, m, re.I) is not None
 
-        return reply(
-            text,
-            "done",
-            True,
-            {
-                "rsvp": rsvp,
-                "guests": guests,
-            },
-        )
+    def ask_confirmation():
+        rsvp = session.get("rsvp", "Maybe")
+        names = session.get("guest_names", [])
+        count = session.get("guest_count", 0)
 
-    # STEP 1: INTRODUCTION
+        if rsvp == "No":
+            text = (
+                "Let me confirm: you will not be attending "
+                "Saturday's event. Is that correct?"
+            )
+        elif rsvp == "Maybe":
+            text = (
+                "Let me confirm: you are not sure whether "
+                "you will attend. Is that correct?"
+            )
+        elif count == 0:
+            text = (
+                "Let me confirm: you will attend Saturday's "
+                "event without additional guests. Is that correct?"
+            )
+        else:
+            text = (
+                f"Let me confirm: you will attend Saturday's "
+                f"event with {count} additional guests: "
+                f"{', '.join(names)}. Is that correct?"
+            )
+
+        return respond(text, "confirm")
+
+    # STEP 1: GREETING
     if stage == "opening":
-        return reply(
+        return respond(
             f"Hello {name}! I'm an AI assistant calling "
             "on behalf of the event organiser. "
-            "We're confirming attendance for Saturday's event. "
-            "Will you be attending?",
+            "Will you be attending Saturday's event?",
             "rsvp",
         )
 
-    # Guest can ask to stop the conversation.
-    if re.search(
-        r"\b(stop calling|don't call|do not call|end call|goodbye)\b",
-        m,
+    if matches(
+        r"\b(stop calling|don't call|do not call|"
+        r"end the call|goodbye)\b"
     ):
-        return completed(
-            "Understood. Thank you for your time. Goodbye!",
-            "Maybe",
-            [],
+        return respond(
+            "Understood. I'll end this call. Goodbye!",
+            "done",
+            True,
+            {"rsvp": "Maybe", "guests": []},
         )
 
     # STEP 2: ATTENDANCE
     if stage == "rsvp":
 
-        no_patterns = [
-            r"\bno\b",
-            r"\bnot coming\b",
-            r"\bnot attending\b",
-            r"\bcan't\b",
-            r"\bcannot\b",
-            r"\bwon't\b",
-            r"\bunable\b",
-            r"\bdecline\b",
-        ]
-
-        yes_patterns = [
-            r"\byes\b",
-            r"\byeah\b",
-            r"\byep\b",
-            r"\bsure\b",
-            r"\bwill attend\b",
-            r"\bwill come\b",
-            r"\bi am coming\b",
-            r"\bi'm coming\b",
-            r"\bi will be there\b",
-            r"\bdefinitely\b",
-        ]
-
-        maybe_patterns = [
-            r"\bmaybe\b",
-            r"\bnot sure\b",
-            r"\bunsure\b",
-            r"\bperhaps\b",
-            r"\bmight\b",
-        ]
-
-        if any(re.search(p, m) for p in no_patterns):
-            return completed(
-                "Thank you for letting us know that "
-                "you won't be attending. "
-                "Have a wonderful day. Goodbye!",
-                "No",
-                [],
+        if matches(
+            r"\b(no|cannot|can't|won't|"
+            r"not coming|not attending|decline)\b"
+        ):
+            session.update(
+                rsvp="No",
+                guest_count=0,
+                guest_names=[],
             )
+            return ask_confirmation()
 
-        if any(re.search(p, m) for p in maybe_patterns):
-            return completed(
-                "No problem. I'll record your response "
-                "as maybe. Thank you for your time. Goodbye!",
-                "Maybe",
-                [],
+        if matches(
+            r"\b(maybe|not sure|unsure|might|perhaps)\b"
+        ):
+            session.update(
+                rsvp="Maybe",
+                guest_count=0,
+                guest_names=[],
             )
+            return ask_confirmation()
 
-        if any(re.search(p, m) for p in yes_patterns):
-            session["rsvp"] = "Yes"
-
-            return reply(
-                "Wonderful! I've recorded that you will attend. "
-                "Will you be bringing any additional guests? "
-                "If yes, how many?",
+        if matches(
+            r"\b(yes|yeah|yep|sure|attend|coming|"
+            r"will come|will be there)\b"
+        ):
+            session.update(
+                rsvp="Yes",
+                guest_count=0,
+                guest_names=[],
+            )
+            return respond(
+                "Great! Will you be bringing any "
+                "additional guests? If yes, how many?",
                 "guest_count",
             )
 
-        return reply(
-            "Sorry, I didn't catch that. "
-            "Will you attend Saturday's event? "
-            "Please say yes, no, or maybe.",
+        return respond(
+            "Sorry, will you be attending Saturday's "
+            "event? Please say yes, no, or maybe.",
             "rsvp",
         )
 
-    # STEP 3: ASK HOW MANY ADDITIONAL GUESTS
+    # STEP 3: ADDITIONAL GUEST COUNT
     if stage == "guest_count":
 
-        zero_patterns = [
-            r"\bno\b",
-            r"\bnone\b",
-            r"\bnobody\b",
-            r"\bzero\b",
-            r"\bjust me\b",
-            r"\bonly me\b",
-            r"\balone\b",
-            r"\bnot bringing\b",
-        ]
-
-        if any(re.search(p, m) for p in zero_patterns):
-            session["guest_count"] = 0
-
-            return completed(
-                "Thank you! Let me confirm: "
-                "you will attend Saturday's event "
-                "without any additional guests. "
-                "I've recorded your RSVP. Goodbye!",
-                "Yes",
-                [],
-            )
-
-        number_words = {
+        numbers = {
+            "zero": 0,
             "one": 1,
             "two": 2,
             "three": 3,
@@ -886,140 +892,182 @@ def agent_reply(state, message, session):
 
         count = None
 
-        match = re.search(r"\b(\d+)\b", m)
-
-        if match:
-            count = int(match.group(1))
+        if matches(
+            r"\b(no|none|nobody|alone|"
+            r"just me|only me|not bringing)\b"
+        ):
+            count = 0
         else:
-            for word, number in number_words.items():
-                if re.search(rf"\b{word}\b", m):
-                    count = number
-                    break
+            found = re.search(r"\b(\d+)\b", m)
 
-        if count is None:
-            return reply(
+            if found:
+                count = int(found.group(1))
+            else:
+                for word, number in numbers.items():
+                    if matches(rf"\b{word}\b"):
+                        count = number
+                        break
+
+        if count is None or count > 20:
+            return respond(
                 "How many additional guests are coming "
-                "with you? You can say zero, one, two, "
-                "or another number.",
+                "with you? Please say a number from "
+                "zero to twenty.",
                 "guest_count",
-            )
-
-        if count > 20:
-            return reply(
-                "For this test, please enter a guest count "
-                "between zero and twenty.",
-                "guest_count",
-            )
-
-        if count == 0:
-            session["guest_count"] = 0
-
-            return completed(
-                "Thank you! I've confirmed that you "
-                "will attend without additional guests. "
-                "Goodbye!",
-                "Yes",
-                [],
             )
 
         session["guest_count"] = count
         session["guest_names"] = []
 
+        if count == 0:
+            return ask_confirmation()
+
         if count == 1:
-            question = (
-                "Great! You are bringing one additional guest. "
-                "What is your guest's name?"
-            )
-        else:
-            question = (
-                f"Great! You are bringing {count} additional guests. "
-                "Please tell me all their names."
+            return respond(
+                "What is your additional guest's name?",
+                "guest_names",
             )
 
-        return reply(question, "guest_names")
-
-    # STEP 4: COLLECT GUEST NAMES
-    if stage in ("guest_names", "guest_names_more"):
-
-        count = int(session.get("guest_count", 1))
-        existing = list(session.get("guest_names", []))
-
-        # Remove common leading phrases.
-        cleaned = re.sub(
-            r"^(their names are|the names are|"
-            r"my guests are|the guest is|"
-            r"his name is|her name is|"
-            r"they are|it is)\s+",
-            "",
-            spoken,
-            flags=re.IGNORECASE,
+        return respond(
+            f"What are the names of your "
+            f"{count} additional guests?",
+            "guest_names",
         )
 
-        # Support names separated by commas, "and", or "&".
-        new_names = [
-            part.strip(" .,").title()
-            for part in re.split(
-                r",|\band\b|&",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
-            if part.strip(" .,")
-        ]
+    # STEP 4: COLLECT ALL GUEST NAMES
+    if stage in ("guest_names", "guest_names_more"):
+
+        cleaned = re.sub(
+            r"^(their names are|the names are|"
+            r"my guests are|they are|the guest is|"
+            r"her name is|his name is)\s+",
+            "",
+            spoken,
+            flags=re.I,
+        )
+
+        new_names = extract_guest_names(cleaned)
 
         if not new_names:
-            return reply(
-                "Sorry, I couldn't catch the guest names. "
+            return respond(
+                "I didn't catch the names. "
                 "Please repeat them.",
                 stage,
             )
 
-        names = existing + new_names
+        expected = int(session.get("guest_count", 0))
 
-        # Keep only the expected number of names.
-        names = names[:count]
+        existing = list(
+            session.get("guest_names", [])
+        )
+
+        names = (existing + new_names)[:expected]
         session["guest_names"] = names
 
-        if len(names) < count:
-            missing = count - len(names)
+        if len(names) < expected:
+            remaining = expected - len(names)
 
-            if missing == 1:
-                question = (
-                    f"Thank you. I've recorded "
-                    f"{', '.join(names)}. "
-                    "What is the remaining guest's name?"
-                )
-            else:
-                question = (
-                    f"Thank you. I've recorded "
-                    f"{', '.join(names)}. "
-                    f"Please tell me the remaining "
-                    f"{missing} guest names."
-                )
+            return respond(
+                f"Thank you. Please tell me the "
+                f"remaining {remaining} guest "
+                f"name{'s' if remaining != 1 else ''}.",
+                "guest_names_more",
+            )
 
-            return reply(question, "guest_names_more")
+        return ask_confirmation()
 
-        guest_word = "guest" if count == 1 else "guests"
+    # STEP 5: CONFIRM WITH THE GUEST
+    if stage == "confirm":
 
-        confirmation = (
-            f"Let me confirm your RSVP. "
-            f"You will attend Saturday's event "
-            f"with {count} additional {guest_word}: "
-            f"{', '.join(names)}. "
-            "Thank you! Your RSVP has been recorded. "
-            "Have a wonderful day. Goodbye!"
+        if matches(
+            r"\b(yes|correct|right|exactly|"
+            r"that's correct|that is correct|ok|okay)\b"
+        ):
+            return respond(
+                "Thank you! Your RSVP has been recorded. "
+                "Have a wonderful day. Goodbye!",
+                "done",
+                True,
+                {
+                    "rsvp": session.get("rsvp", "Maybe"),
+                    "guests": list(
+                        session.get("guest_names", [])
+                    ),
+                },
+            )
+
+        if matches(
+            r"\b(no|incorrect|wrong|change|correction)\b"
+        ):
+            session.update(
+                rsvp="",
+                guest_count=0,
+                guest_names=[],
+            )
+
+            return respond(
+                "Sorry about that. Let's correct it. "
+                "Will you be attending Saturday's event?",
+                "rsvp",
+            )
+
+        return respond(
+            "Please confirm: is that correct? "
+            "Say yes or no.",
+            "confirm",
         )
-        return completed(
-            confirmation,
-            "Yes",
-            names,
-        )
 
-    return reply(
-        "Your RSVP conversation has already finished. "
-        "Thank you!",
+    return respond(
+        "Your RSVP conversation is complete. Goodbye!",
         "done",
         True,
     )
+
+
+@app.get("/api/sarvam/call-instructions")
+async def sarvam_call_instructions(request: Request):
+    import hmac
+    import os
+
+    expected_token = os.getenv(
+        "SARVAM_INSTRUCTIONS_TOKEN", ""
+    ).strip()
+
+    received_token = request.headers.get(
+        "X-Instructions-Token", ""
+    ).strip()
+
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Instructions token not configured"
+        )
+
+    if not received_token or not hmac.compare_digest(
+        received_token,
+        expected_token
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing instructions token"
+        )
+
+    state = load_state()
+
+    instructions = str(
+        state.get("agent", {}).get("prompt", "")
+    ).strip()
+
+    if not instructions:
+        raise HTTPException(
+            status_code=409,
+            detail="No frontend instructions saved"
+        )
+
+    return {
+        "call_instructions": instructions
+    }
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))

@@ -797,38 +797,59 @@ if ($("#runDemoCampaign")) {
 }
 
 // Real Sarvam calling
+
 if ($("#runCampaign")) {
     $("#runCampaign").onclick = async () => {
         if (startingRealCampaign) return;
 
         if (!(state.contacts || []).length) {
-            toast("Upload contacts first.");
+            toast("Upload contacts before starting calls.");
             return;
         }
 
-        startingRealCampaign = true;
         const button = $("#runCampaign");
+        startingRealCampaign = true;
         button.disabled = true;
 
         try {
-            toast("Starting Sarvam RSVP campaign…");
+            toast("Starting Sarvam RSVP campaign...");
 
-            const d = await api("/api/campaign/real/run", {
-                method: "POST"
-            }, 45000);
+            const data = await api(
+                "/api/campaign/real/run",
+                { method: "POST" },
+                45000
+            );
 
             await refreshState();
 
-            if (d.finished) {
-                toast("All contacts completed");
+            if (data.finished) {
+                toast("No Ready contacts remaining.");
+            } else if (data.already_running) {
+                toast(
+                    `Call already running: ${
+                        data.contact || "contact"
+                    }. Waiting for completion.`,
+                    5000
+                );
             } else {
-                toast(`Calling ${d.contact}…`);
+                toast(
+                    `Calling ${
+                        data.contact || "next contact"
+                    }...`,
+                    4000
+                );
             }
-        } catch (e) {
-            toast(`Sarvam error: ${e.message}`, 6500);
+
+        } catch (error) {
+            console.error("Campaign error:", error);
+            toast(error.message, 6000);
+
             try {
                 await refreshState();
-            } catch (_) {}
+            } catch (refreshError) {
+                console.warn(refreshError);
+            }
+
         } finally {
             startingRealCampaign = false;
             button.disabled = false;

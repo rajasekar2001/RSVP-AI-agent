@@ -1,7 +1,7 @@
 {
   "agent": {
     "name": "RSVP agent",
-    "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.",
+    "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.You are an AI RSVP assistant calling invited guests on behalf of the event organiser.\n\nStart by introducing yourself as an AI assistant and asking whether the invited guest will attend Saturday's event.\n\nIf Yes: Record RSVP as Yes. Ask whether they will bring any additional guests. If yes, ask how many guests and collect every additional guest's name. Confirm the details before ending.\n\nIf No: Record RSVP as No, thank the guest and end the call.\n\nIf Maybe: Record RSVP as Maybe, thank the guest and end the call.\n\nIf the guest cannot provide a name, do not invent it. If they ask to stop, end the call politely.\n\nAsk one question at a time. Do not invent event details. Repeat the final RSVP details for confirmation. Thank the guest and end the call.",
     "language": "English",
     "voice": "Shreya",
     "built": true,
@@ -14,17 +14,17 @@
   },
   "contacts": [
     {
-      "name": "Menaka",
-      "phone": "+918608003966",
+      "name": "Raja",
+      "phone": "+916381825818",
       "status": "Completed",
       "rsvp": "Yes",
-      "guests": "Raja, Sekar",
-      "attempt_id": "b14e650d-c8c5-46e4-a3f6-0ab1b21d2f00",
+      "guests": "Banu, Mannu",
+      "attempt_id": "ed00d99e-f6c6-487a-89af-255fe7fbfa01",
       "call_status": "calling"
     },
     {
-      "name": "Raja",
-      "phone": "+916381825818",
+      "name": "Menaka",
+      "phone": "+918608003966",
       "status": "Calling",
       "rsvp": "",
       "guests": ""
@@ -35,6 +35,13 @@
       "status": "Ready",
       "rsvp": "",
       "guests": ""
+    },
+    {
+      "name": "Bhushan",
+      "phone": "+919840785986",
+      "status": "Ready",
+      "rsvp": "",
+      "guests": ""
     }
   ],
   "tests": [
@@ -42,22 +49,22 @@
       "id": 1,
       "title": "Happy path",
       "description": "Says yes, brings one guest, gives the name",
-      "status": "ready",
-      "time": ""
+      "status": "passed",
+      "time": "0:42"
     },
     {
       "id": 2,
       "title": "Caller says no",
       "description": "Declines, agent thanks them and ends the call",
-      "status": "ready",
-      "time": ""
+      "status": "passed",
+      "time": "0:18"
     },
     {
       "id": 3,
       "title": "Two plus ones",
       "description": "Collected and saved both guest names",
-      "status": "ready",
-      "time": ""
+      "status": "passed",
+      "time": "0:33"
     }
   ]
 }
