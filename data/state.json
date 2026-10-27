@@ -1,11 +1,14 @@
 {
   "agent": {
     "name": "RSVP agent",
-    "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.You are an AI RSVP assistant calling invited guests on behalf of the event organiser.\n\nStart by introducing yourself as an AI assistant and asking whether the invited guest will attend Saturday's event.\n\nIf Yes: Record RSVP as Yes. Ask whether they will bring any additional guests. If yes, ask how many guests and collect every additional guest's name. Confirm the details before ending.\n\nIf No: Record RSVP as No, thank the guest and end the call.\n\nIf Maybe: Record RSVP as Maybe, thank the guest and end the call.\n\nIf the guest cannot provide a name, do not invent it. If they ask to stop, end the call politely.\n\nAsk one question at a time. Do not invent event details. Repeat the final RSVP details for confirmation. Thank the guest and end the call.",
+    "prompt": "Call the invited guests for Tuesday's event and confirm whether they will attend.\n\nStart by greeting each guest politely and introducing yourself as an AI assistant calling on behalf of the event organiser.\n\nAsk whether they will attend Friday's event.\n\nIf YES, ask whether they are bringing any additional guests. Ask how many guests are coming and collect every additional guest's name.\n\nIf NO, record their RSVP as No, thank them, and end the call.\n\nIf MAYBE, record their RSVP as Maybe and thank them politely.\n\nRepeat the attendance status, additional guest count, and guest names to confirm everything is correct.\n\nAsk one question at a time, speak naturally in English, and never invent guest information. Thank the guest and end the call.\nStart by introducing yourself as an AI assistant and asking whether the invited guest will attend Saturday's event.\n\nIf Yes: Record RSVP as Yes. Ask whether they will bring any additional guests. If yes, ask how many guests and collect every additional guest's name. Confirm the details before ending.\n\nIf No: Record RSVP as No, thank the guest and end the call.\n\nIf Maybe: Record RSVP as Maybe, thank the guest and end the call.\n\nIf the guest cannot provide a name, do not invent it. If they ask to stop, end the call politely.\n\nAsk one question at a time. Do not invent event details. Repeat the final RSVP details for confirmation. Thank the guest and end the call.",
     "language": "English",
     "voice": "Shreya",
     "built": true,
-    "fixed_plus_ones": true
+    "fixed_plus_ones": true,
+    "voice_language": "en-IN",
+    "voice_tone": "normal",
+    "voice_speed": 1.5
   },
   "knowledge": [],
   "webhook": {
@@ -16,29 +19,22 @@
     {
       "name": "Raja",
       "phone": "+916381825818",
-      "status": "Completed",
-      "rsvp": "Yes",
-      "guests": "Banu, Mannu",
-      "attempt_id": "ed00d99e-f6c6-487a-89af-255fe7fbfa01",
+      "status": "Calling",
+      "rsvp": "",
+      "guests": "",
+      "attempt_id": "cb9259ec-08a3-47f3-974c-7e2442b91468",
       "call_status": "calling"
     },
     {
-      "name": "Menaka",
-      "phone": "+918608003966",
-      "status": "Calling",
+      "name": "Bhushan",
+      "phone": "+919840785986",
+      "status": "Ready",
       "rsvp": "",
       "guests": ""
     },
     {
       "name": "Ganesun",
       "phone": "+918148171649",
-      "status": "Ready",
-      "rsvp": "",
-      "guests": ""
-    },
-    {
-      "name": "Bhushan",
-      "phone": "+919840785986",
       "status": "Ready",
       "rsvp": "",
       "guests": ""

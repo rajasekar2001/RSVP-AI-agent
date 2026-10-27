@@ -1,0 +1,1 @@
+Browser English/Tamil/etc locale: select voice matching locale. If no compatible installed voice, app displays a warning rather than silently falling back to Hindi. Sarvam real calls are controlled separately by the committed Sarvam Voice Agent; this JS change does NOT change Sarvam's actual phone-call language. Keep your private .env outside the ZIP.

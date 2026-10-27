@@ -1,4 +1,3 @@
-
 const $ = (s, e = document) => e.querySelector(s);
 const $$ = (s, e = document) => [...e.querySelectorAll(s)];
 
@@ -75,7 +74,35 @@ async function api(url, options = {}, timeoutMs = 15000) {
 async function refreshState() {
     state = await api("/api/state", {}, 10000);
     render();
+    syncVoicePrefs();
     return state;
+}
+
+// Voice preferences available to all UI handlers.
+function voicePrefs() {
+    return {
+        voice_language: $("#voiceLanguage")?.value || "",
+        voice_tone: $("#voiceTone")?.value || "normal",
+        voice_speed: Number($("#voiceSpeed")?.value || 1)
+    };
+}
+
+function syncVoicePrefs() {
+    if ($("#voiceLanguage")) $("#voiceLanguage").value = state.agent?.voice_language || "";
+    if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
+    if ($("#voiceSpeed")) $("#voiceSpeed").value = state.agent?.voice_speed ?? 1;
+    if ($("#voiceSpeedLabel")) $("#voiceSpeedLabel").textContent = `${Number($("#voiceSpeed")?.value || 1).toFixed(1)}×`;
+}
+
+$("#voiceSpeed")?.addEventListener("input", () => {
+    const label = $("#voiceSpeedLabel");
+    if (label) label.textContent = `${Number($("#voiceSpeed").value).toFixed(1)}×`;
+});
+
+syncVoicePrefs();
+
+if ("speechSynthesis" in window) {
+    speechSynthesis.getVoices();
 }
 
 function showTab(id) {
@@ -230,6 +257,7 @@ function startListening() {
         listening = true;
         $("#micBtn").textContent = "◉";
         setStatus(`Listening to ${currentContactName}…`);
+        recognition.lang = voicePrefs().voice_language || "en-IN";
         recognition.start();
     } catch (e) {
         listening = false;
@@ -237,33 +265,57 @@ function startListening() {
     }
 }
 
+// Pick a speech voice matching the chosen language. Never intentionally
+// fall back to Hindi when English (or another language) is selected.
+function chooseBrowserVoice(locale) {
+    const voices = window.speechSynthesis?.getVoices() || [];
+    const exact = voices.find(v => v.lang.toLowerCase() === locale.toLowerCase());
+    if (exact) return exact;
+    const base = locale.split("-")[0].toLowerCase();
+    return voices.find(v => v.lang.split("-")[0].toLowerCase() === base) || null;
+}
+
 function speak(text, listenAfter = true, onFinished = null) {
     if (!("speechSynthesis" in window)) {
-        if (onFinished) return onFinished();
-        if (listenAfter) setTimeout(startListening, 300);
+        toast("Browser speech synthesis is unavailable; use Chat Test.");
+        if (onFinished) onFinished();
+        return;
+    }
+    speechSynthesis.cancel();
+    const prefs = voicePrefs();
+    const locale = prefs.voice_language || "en-IN";
+    const selected = chooseBrowserVoice(locale);
+
+    // On browsers that expose a voice list, don't let the OS choose a
+    // mismatched Hindi default when the requested locale is English.
+    const available = speechSynthesis.getVoices();
+    if (!selected && available.length) {
+        const label = ({"en-IN":"English","ta-IN":"Tamil","hi-IN":"Hindi", "te-IN":"Telugu","ml-IN":"Malayalam","kn-IN":"Kannada"})[locale] || locale;
+        toast(`No ${label} browser voice installed. Install it in Windows speech settings, or use Chat Test.`, 7000);
+        setStatus(`No compatible browser voice for ${label}`);
+        if (onFinished) onFinished();
         return;
     }
 
-    speechSynthesis.cancel();
-    agentSpeaking = true;
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-IN";
-    u.rate = 1;
-
-    u.onstart = () =>
-        setStatus(`Agent speaking to ${currentContactName || ""}…`);
-
+    u.lang = selected?.lang || locale;
+    if (selected) u.voice = selected;
+    u.rate = Math.min(1.5, Math.max(0.7, Number(prefs.voice_speed) || 1));
+    u.pitch = ({normal:1, friendly:1.1, professional:0.95, calm:0.9})[prefs.voice_tone] ?? 1;
+    agentSpeaking = true;
+    let finished = false;
     const finish = () => {
+        if (finished) return;
+        finished = true;
         agentSpeaking = false;
-        if (onFinished) return onFinished();
-        if (listenAfter && session && !callFinished &&
-            testMode === "voice") {
+        if (onFinished) { onFinished(); return; }
+        if (listenAfter && session && !callFinished && testMode === "voice") {
             setTimeout(startListening, 300);
         }
     };
-
+    u.onstart = () => setStatus(`Agent speaking (${u.lang}) to ${currentContactName || ""}…`);
     u.onend = finish;
-    u.onerror = finish;
+    u.onerror = e => { toast(`Speech error: ${e.error || "unknown"}`, 5000); finish(); };
     speechSynthesis.speak(u);
 }
 
@@ -594,9 +646,10 @@ if ($("#buildBtn")) {
             const d = await api("/api/build", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prompt })
+                body: JSON.stringify({ prompt, ...voicePrefs() })
             });
             state.agent = d.agent;
+            syncVoicePrefs();
             if ($("#instructionBox")) $("#instructionBox").value = prompt;
             showTab("build");
             toast("Agent built. Test it now.");
@@ -613,9 +666,10 @@ if ($("#saveInstructions")) {
             const d = await api("/api/build", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prompt })
+                body: JSON.stringify({ prompt, ...voicePrefs() })
             });
             state.agent = d.agent;
+            syncVoicePrefs();
             if ($("#prompt")) $("#prompt").value = prompt;
             toast("Instructions saved");
         } catch (e) {
@@ -924,3 +978,150 @@ if ($("#resetBtn")) {
         }
     };
 }
+
+
+// ============================================================
+// Protected Sarvam call recordings and transcript viewer
+// ============================================================
+let recordingsAccessToken = "";
+let activeRecordingBlobUrl = "";
+
+function callHistoryMessage(message) {
+    const target = document.querySelector("#callHistory");
+    if (target) target.textContent = message;
+}
+
+async function recordingsRequest(url, responseType = "json") {
+    if (!recordingsAccessToken) throw new Error("Unlock call history first");
+    const result = await fetch(url, {
+        headers: {"X-Recordings-Token": recordingsAccessToken},
+        cache: "no-store"
+    });
+    if (!result.ok) {
+        let reason = `HTTP ${result.status}`;
+        try {
+            const json = await result.json();
+            reason = json.detail || reason;
+        } catch (_) {}
+        throw new Error(reason);
+    }
+    return responseType === "blob" ? result.blob() : result.json();
+}
+
+async function refreshCallHistory() {
+    try {
+        const data = await recordingsRequest("/api/calls");
+        const host = document.querySelector("#callHistory");
+        if (!host) return;
+        host.replaceChildren();
+        if (!data.calls.length) {
+            host.textContent = "No real call attempts have been saved yet.";
+            return;
+        }
+        data.calls.forEach(call => {
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #eee";
+            const info = document.createElement("span");
+            info.style.flex = "1 1 240px";
+            info.textContent = `${call.name || "Guest"} — ${call.status || "Unknown"} — ${call.duration == null ? "—" : Number(call.duration).toFixed(1)+"s"}`;
+            row.appendChild(info);
+
+            const transcript = document.createElement("button");
+            transcript.className = "ghost";
+            transcript.textContent = "📝 Transcript";
+
+            transcript.title = call.has_transcript
+                ? "View transcript"
+                : "Check transcript availability";
+
+            transcript.onclick = () => {
+                if (!call.has_transcript) {
+                    const message =
+                        String(call.status || "").toLowerCase() === "calling"
+                            ? "Call still marked Calling. Waiting for the completion webhook and transcript."
+                            : "No transcript stored for this call. Check the completion webhook.";
+
+                    const viewer = document.querySelector("#callTranscript");
+
+                    if (viewer) {
+                        viewer.textContent = message;
+                    }
+
+                    toast(message, 6500);
+                    return;
+                }
+
+                showCallTranscript(call.attempt_id);
+            };
+
+            row.appendChild(transcript);
+
+            const play = document.createElement("button");
+            play.className = "ghost";
+            play.textContent = "▶ Recording";
+
+            play.title = call.has_recording
+                ? "Play recording"
+                : "Check recording availability";
+
+            play.onclick = () => {
+                if (!call.has_recording) {
+                    const message =
+                        String(call.status || "").toLowerCase() === "calling"
+                            ? "Call still marked Calling. Recording may become available after completion."
+                            : "No recording is indicated for this call. Check Sarvam call logs and interaction ID.";
+
+                    callHistoryMessage(message);
+                    toast(message, 6500);
+                    return;
+                }
+
+                playCallRecording(call.attempt_id);
+            };
+
+            row.appendChild(play);
+
+            host.appendChild(row);
+        });
+    } catch (err) { callHistoryMessage(`Cannot load calls: ${err.message}`); }
+}
+
+async function showCallTranscript(attemptId) {
+    const node = document.querySelector("#callTranscript");
+    if (!node) return;
+    node.textContent = "Loading transcript…";
+    try {
+        const data = await recordingsRequest(`/api/calls/${encodeURIComponent(attemptId)}/transcript`);
+        const rows = data.transcript;
+        node.textContent = rows.length
+            ? rows.map(item => `${item.role === "agent" ? "AI" : "Guest"}: ${item.indic_text || item.en_text || item.text || ""}`).join("\n\n")
+            : "Transcript not available for this call.";
+    } catch (err) { node.textContent = `Transcript error: ${err.message}`; }
+}
+
+async function playCallRecording(attemptId) {
+    const player = document.querySelector("#callRecordingPlayer");
+    if (!player) return;
+    try {
+        callHistoryMessage("Fetching recording securely from Sarvam…");
+        const blob = await recordingsRequest(`/api/calls/${encodeURIComponent(attemptId)}/recording`, "blob");
+        player.pause();
+        if (activeRecordingBlobUrl) URL.revokeObjectURL(activeRecordingBlobUrl);
+        activeRecordingBlobUrl = URL.createObjectURL(blob);
+        player.src = activeRecordingBlobUrl;
+        player.style.display = "block";
+        await player.play();
+        await refreshCallHistory();
+    } catch (err) { callHistoryMessage(`Recording error: ${err.message}`); }
+}
+
+const unlockCallsButton = document.querySelector("#unlockCalls");
+if (unlockCallsButton) {
+    unlockCallsButton.onclick = async () => {
+        const token = window.prompt("Enter your private RSVP_RECORDINGS_ACCESS_TOKEN (not your Sarvam API key):");
+        if (!token) return;
+        recordingsAccessToken = token.trim();
+        await refreshCallHistory();
+    };
+}
+document.querySelector("#reloadCalls")?.addEventListener("click", refreshCallHistory);

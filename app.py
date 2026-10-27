@@ -10,12 +10,13 @@ import threading
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from openpyxl import load_workbook
 import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pypdf import PdfReader
@@ -41,6 +42,9 @@ DEFAULT_STATE = {
         "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.",
         "language": "English",
         "voice": "Shreya",
+        "voice_language": "",
+        "voice_tone": "normal",
+        "voice_speed": 1.0,
         "built": True,
         "fixed_plus_ones": True,
     },
@@ -57,6 +61,15 @@ DEFAULT_STATE = {
         {"id": 3, "title": "Two plus ones", "description": "Collect and save both guest names", "status": "ready", "time": ""},
     ],
 }
+
+
+def public_state():
+    """Do not expose sensitive call data on the existing public dashboard routes."""
+    data = load_state()
+    for c in data.get("contacts", []):
+        for secret in ("transcript", "sarvam_variables", "recording_url"):
+            c.pop(secret, None)
+    return data
 
 
 def load_state():
@@ -336,12 +349,12 @@ async def start_next_real_call_after_delay(delay=2):
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context={"state": load_state()})
+    return templates.TemplateResponse(request=request, name="index.html", context={"state": public_state()})
 
 
 @app.get("/api/state")
 async def get_state():
-    return load_state()
+    return public_state()
 
 
 @app.get("/api/contacts/next")
@@ -358,6 +371,27 @@ async def build(request: Request):
     prompt = (data.get("prompt") or "").strip()
     if len(prompt) < 10:
         raise HTTPException(status_code=400, detail="Describe the agent task in a little more detail.")
+
+    agent = state["agent"]
+    # Additive voice preferences; omitted fields leave the current settings unchanged.
+    if "voice_language" in data:
+        value = str(data["voice_language"] or "")
+        if value not in {"", "en-IN", "ta-IN", "hi-IN", "te-IN", "ml-IN", "kn-IN"}:
+            raise HTTPException(status_code=400, detail="Unsupported voice language")
+        agent["voice_language"] = value
+    if "voice_tone" in data:
+        value = str(data["voice_tone"] or "normal")
+        if value not in {"normal", "friendly", "professional", "calm"}:
+            raise HTTPException(status_code=400, detail="Unsupported voice tone")
+        agent["voice_tone"] = value
+    if "voice_speed" in data:
+        try:
+            value = float(data["voice_speed"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid voice speed")
+        if not 0.7 <= value <= 1.5:
+            raise HTTPException(status_code=400, detail="Voice speed must be 0.7 to 1.5")
+        agent["voice_speed"] = value
 
     state["agent"]["prompt"] = prompt
     state["agent"]["built"] = True
@@ -595,6 +629,91 @@ async def sarvam_config_status():
 
 
 
+# Recording and transcript access is protected separately from the public dashboard.
+# Set RSVP_RECORDINGS_ACCESS_TOKEN in .env and in Render Environment.
+def require_recordings_auth(request: Request):
+    expected = os.getenv("RSVP_RECORDINGS_ACCESS_TOKEN", "").strip()
+    given = request.headers.get("X-Recordings-Token", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Set RSVP_RECORDINGS_ACCESS_TOKEN on the server")
+    if not given or not hmac.compare_digest(given, expected):
+        raise HTTPException(status_code=401, detail="Invalid recordings access token")
+
+
+def call_entry(contact):
+    transcript = contact.get("transcript")
+    return {
+        "name": contact.get("name", ""),
+        "phone": contact.get("phone", ""),
+        "status": contact.get("status", ""),
+        "rsvp": contact.get("rsvp", ""),
+        "guests": contact.get("guests", ""),
+        "attempt_id": contact.get("attempt_id", ""),
+        "interaction_id": contact.get("interaction_id", ""),
+        "duration": contact.get("duration"),
+        "has_transcript": bool(transcript),
+        "has_recording": bool(contact.get("interaction_id")),
+    }
+
+
+@app.get("/api/calls")
+async def list_calls(request: Request):
+    require_recordings_auth(request)
+    state = load_state()
+    return {"calls": [call_entry(c) for c in state.get("contacts", [])
+                      if c.get("attempt_id") or c.get("transcript")]}
+
+
+@app.get("/api/calls/{attempt_id}/transcript")
+async def call_transcript(attempt_id: str, request: Request):
+    require_recordings_auth(request)
+    with STATE_LOCK:
+        state = load_state()
+        contact = find_contact_by_attempt_id(state, attempt_id)
+        if not contact:
+            raise HTTPException(status_code=404, detail="Call not found")
+        transcript = contact.get("transcript") or []
+    return {"call": call_entry(contact), "transcript": transcript}
+
+
+@app.get("/api/calls/{attempt_id}/recording")
+async def call_recording(attempt_id: str, request: Request):
+    require_recordings_auth(request)
+    state = load_state()
+    contact = find_contact_by_attempt_id(state, attempt_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="Call not found")
+    interaction_id = str(contact.get("interaction_id") or "")
+    if not interaction_id:
+        raise HTTPException(status_code=404, detail="This call has no recording (not connected or still processing)")
+    from sarvam_voice import SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID, SARVAM_WORKSPACE_ID, SARVAM_APP_ID
+    url = (f"{SARVAM_API_BASE}/api/analytics/v1/"
+           f"{quote(SARVAM_ORG_ID, safe='')}/{quote(SARVAM_WORKSPACE_ID, safe='')}/"
+           f"{quote(SARVAM_APP_ID, safe='')}/recordings/{quote(interaction_id, safe='')}")
+    try:
+        result = await asyncio.to_thread(
+            requests.get, url,
+            headers={"X-API-Key": SARVAM_API_KEY, "Accept": "audio/wav"},
+            timeout=45,
+        )
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Recording service unreachable")
+    if result.status_code == 404:
+        raise HTTPException(status_code=404, detail="Recording not yet available")
+    if not result.ok:
+        raise HTTPException(status_code=502,
+                            detail=f"Sarvam recording API returned HTTP {result.status_code}")
+    if not result.headers.get("content-type", "").lower().startswith(("audio/", "application/octet-stream")):
+        raise HTTPException(status_code=502, detail="Unexpected recording content type")
+    if len(result.content) > 60 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Recording is larger than 60 MB")
+    return Response(
+        content=result.content,
+        media_type="audio/wav",
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @app.post("/api/campaign/real/run")
 async def real_campaign():
     if not sarvam_configured():
@@ -670,38 +789,60 @@ async def real_campaign():
 
 @app.post("/api/sarvam/webhook")
 async def sarvam_webhook(request: Request):
-    """Receive the Instant Outbound completion webhook from Sarvam Voice Agents."""
-    # Secret callback URL token: protects this endpoint from arbitrary POSTs.
+    """Receive Sarvam Instant Outbound terminal outcomes.
+
+    IMPORTANT: The webhook must reach the SAME persistent database/server
+    used to start calls. A callback on Render cannot update localhost's
+    separate data/state.json.
+    """
     supplied_token = request.query_params.get("token", "")
     if not WEBHOOK_TOKEN or not secrets.compare_digest(supplied_token, WEBHOOK_TOKEN):
+        print("SARVAM WEBHOOK REJECTED: missing or invalid token", flush=True)
         raise HTTPException(status_code=401, detail="Invalid webhook token")
-    payload = await request.json()
-    attempt_id = str(payload.get("attempt_id") or "")
-    status = str(payload.get("status") or "").lower()
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON webhook")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Webhook must be a JSON object")
+
+    attempt_id = str(payload.get("attempt_id") or "").strip()
+    status = str(payload.get("status") or "").strip().lower()
     metadata = (payload.get("webhook_config") or {}).get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
 
-    print("SARVAM WEBHOOK:", attempt_id, status)
+    terminal = {"connected", "no_answer", "busy", "failed"}
+    if not attempt_id or status not in terminal:
+        print("SARVAM WEBHOOK BAD PAYLOAD:", bool(attempt_id), status, flush=True)
+        raise HTTPException(status_code=422, detail="Invalid attempt_id or nonterminal call status")
 
-    state = load_state()
-    contact = find_contact_by_attempt_id(state, attempt_id) or find_contact_from_metadata(state, metadata)
-    if contact and contact.get("attempt_id") and attempt_id and contact["attempt_id"] != attempt_id:
-        raise HTTPException(status_code=409, detail="Attempt ID mismatch")
-    if contact and contact.get("processed_attempt_id") == attempt_id:
-        return {"ok": True, "duplicate": True}
-    if not contact:
-        return {"ok": False, "message": "Unknown call attempt"}
+    print("SARVAM WEBHOOK RECEIVED:", attempt_id, status, flush=True)
 
-    if contact:
-        if attempt_id:
-            contact["attempt_id"] = attempt_id
+    # Keep lookup + update atomic on this server. Never update another
+    # unrelated contact by name when a supplied attempt_id mismatches.
+    with STATE_LOCK:
+        state = load_state()
+        contact = find_contact_by_attempt_id(state, attempt_id)
+        if contact is None:
+            candidate = find_contact_from_metadata(state, metadata)
+            if candidate is not None and not candidate.get("attempt_id"):
+                contact = candidate
+        if contact is None:
+            print("SARVAM WEBHOOK UNKNOWN ATTEMPT:", attempt_id, flush=True)
+            raise HTTPException(status_code=404, detail="Unknown attempt ID on this server")
+        if contact.get("processed_attempt_id") == attempt_id:
+            print("SARVAM WEBHOOK DUPLICATE:", attempt_id, flush=True)
+            return {"ok": True, "duplicate": True}
+
+        contact["attempt_id"] = attempt_id
         contact["call_status"] = status
         contact["duration"] = payload.get("duration")
         contact["interaction_id"] = payload.get("interaction_id")
         contact["failure_reason"] = payload.get("failure_reason") or ""
-        transcript = payload.get("interaction_transcript")
-        if transcript is not None:
-            contact["transcript"] = transcript
-
+        if payload.get("interaction_transcript") is not None:
+            contact["transcript"] = payload["interaction_transcript"]
         final_vars = payload.get("final_agent_variables") or payload.get("output_agent_variables") or {}
         contact["sarvam_variables"] = final_vars
 
@@ -712,42 +853,37 @@ async def sarvam_webhook(request: Request):
                 contact["guests"] = ", ".join(guests)
                 contact["status"] = "Completed"
             else:
-                # Connected call completed, but the agent did not output an RSVP variable.
                 contact["status"] = "Call ended"
-        elif status == "no_answer":
-            contact["status"] = "No answer"
-        elif status == "busy":
-            contact["status"] = "Busy"
-        elif status == "failed":
-            contact["status"] = "Failed"
         else:
-            contact["status"] = status.title() if status else "Call ended"
+            contact["status"] = {
+                "no_answer": "No answer", "busy": "Busy", "failed": "Failed"
+            }[status]
 
         contact["processed_attempt_id"] = attempt_id
+        contact["call_ended_at"] = datetime.now().isoformat(timespec="seconds")
         save_state(state)
-
-        # Optional user webhook from the UI.
+        contact_name = contact.get("name", "")
         generic_webhook = state.get("webhook", {})
-        if generic_webhook.get("enabled") and generic_webhook.get("url"):
-            try:
-                await asyncio.to_thread(
-                    requests.post,
-                    generic_webhook["url"],
-                    json={
-                        "contact": contact.get("name"),
-                        "phone": contact.get("phone"),
-                        "rsvp": contact.get("rsvp", ""),
-                        "guests": normalize_guests(contact.get("guests", "")),
-                        "sarvam": payload,
-                    },
-                    timeout=5,
-                )
-            except Exception as exc:
-                print("User webhook failed:", exc)
+        callback_url = generic_webhook.get("url") if generic_webhook.get("enabled") else None
+        callback_data = {
+            "contact": contact_name,
+            "phone": contact.get("phone"),
+            "rsvp": contact.get("rsvp", ""),
+            "guests": normalize_guests(contact.get("guests", "")),
+            "sarvam": payload,
+        }
 
-    # Sarvam sends this after each attempt, so start the next Ready contact.
+    print("SARVAM WEBHOOK SAVED:", attempt_id, status, contact_name, flush=True)
+    if callback_url:
+        async def send_optional_callback():
+            try:
+                await asyncio.to_thread(requests.post, callback_url, json=callback_data, timeout=5)
+            except Exception as exc:
+                print("User webhook failed:", type(exc).__name__, flush=True)
+        asyncio.create_task(send_optional_callback())
+
     asyncio.create_task(start_next_real_call_after_delay())
-    return {"ok": True}
+    return {"ok": True, "attempt_id": attempt_id, "status": status}
 
 
 @app.post("/api/reset")
@@ -761,11 +897,72 @@ def agent_reply(state, message, session):
     """RSVP conversation with final confirmation."""
 
     spoken = str(message or "").strip()
+    # Read the event day from the saved Genie Build instructions.
+    # If conflicting days are mentioned, the FIRST named event day wins.
+    instructions = str(state.get("agent", {}).get("prompt", ""))
+    day_match = re.search(
+        r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+        instructions,
+        flags=re.IGNORECASE,
+    )
+    event_day = day_match.group(1).capitalize() if day_match else ""
+    event_label = f"{event_day}'s event" if event_day else "the event"
+    tamil_days = {
+        "Monday": "திங்கட்கிழமை", "Tuesday": "செவ்வாய்க்கிழமை",
+        "Wednesday": "புதன்கிழமை", "Thursday": "வியாழக்கிழமை",
+        "Friday": "வெள்ளிக்கிழமை", "Saturday": "சனிக்கிழமை",
+        "Sunday": "ஞாயிற்றுக்கிழமை",
+    }
+    tamil_event = (
+        f"{tamil_days[event_day]} நிகழ்ச்சிக்கு" if event_day
+        else "நிகழ்ச்சிக்கு"
+    )
+    language = state.get("agent", {}).get("voice_language", "")
     m = spoken.lower()
+    # Understand basic Tamil attendance/count answers in the browser demo.
+    if language == "ta-IN":
+        if any(word in m for word in ("வரமாட்டேன்", "வர முடியாது", "இல்லை")):
+            m = "no"
+        elif any(word in m for word in ("ஒருவேளை", "தெரியவில்லை", "தெரில")):
+            m = "maybe"
+        elif any(word in m for word in ("வருவேன்", "வரேன்", "ஆமாம்", "ஆம்")):
+            m = "yes"
+        elif "யாரும் இல்லை" in m or "தனியாக" in m:
+            m = "zero"
+        else:
+            for word, number in {"ஒரு": 1, "இரண்டு": 2, "மூன்று": 3, "நான்கு": 4, "ஐந்து": 5}.items():
+                if word in m:
+                    m = str(number)
+                    break
     stage = session.get("stage", "opening")
     name = session.get("name", "there")
 
     def respond(text, next_stage, done=False, result=None):
+        if language == "ta-IN":
+            names = session.get("guest_names", [])
+            count = session.get("guest_count", 0)
+            rsvp = session.get("rsvp", "")
+            if stage == "opening":
+                text = f"வணக்கம் {name}! நான் நிகழ்ச்சி ஏற்பாட்டாளரின் AI உதவியாளர். {tamil_event} நீங்கள் வருகிறீர்களா?"
+            elif next_stage == "guest_count":
+                text = "மிகவும் நல்லது! உங்களுடன் கூடுதல் விருந்தினர்கள் வருகிறார்களா? எத்தனை பேர் வருவார்கள்?"
+            elif next_stage in ("guest_names", "guest_names_more"):
+                text = f"நன்றி. கூடுதலாக வரும் {count} விருந்தினர்களின் பெயர்களைச் சொல்லுங்கள்."
+            elif next_stage == "confirm":
+                if rsvp == "No":
+                    text = "நீங்கள் நிகழ்ச்சிக்கு வரவில்லை என்று பதிவு செய்கிறேன். அது சரியா?"
+                elif rsvp == "Maybe":
+                    text = "நீங்கள் வருவது இன்னும் உறுதியாகவில்லை. அது சரியா?"
+                elif count == 0:
+                    text = "நீங்கள் கூடுதல் விருந்தினர்கள் இல்லாமல் வருகிறீர்கள். அது சரியா?"
+                else:
+                    text = f"நீங்கள் {count} கூடுதல் விருந்தினர்களுடன் வருகிறீர்கள்: {', '.join(names)}. இது சரியா?"
+            elif next_stage == "done":
+                text = "நன்றி! உங்கள் பதில் பதிவு செய்யப்பட்டது. வணக்கம்!"
+            elif next_stage == "rsvp":
+                text = f"நீங்கள் {tamil_event} வருகிறீர்களா? ஆம், இல்லை, அல்லது ஒருவேளை என்று சொல்லுங்கள்."
+            elif next_stage == "guest_count":
+                text = "எத்தனை கூடுதல் விருந்தினர்கள் வருவார்கள்?"
         session["stage"] = next_stage
         output = {
             "reply": text,
@@ -787,7 +984,7 @@ def agent_reply(state, message, session):
         if rsvp == "No":
             text = (
                 "Let me confirm: you will not be attending "
-                "Saturday's event. Is that correct?"
+                f"{event_label}. Is that correct?"
             )
         elif rsvp == "Maybe":
             text = (
@@ -796,13 +993,13 @@ def agent_reply(state, message, session):
             )
         elif count == 0:
             text = (
-                "Let me confirm: you will attend Saturday's "
-                "event without additional guests. Is that correct?"
+                "Let me confirm: you will attend "
+                f"{event_label} without additional guests. Is that correct?"
             )
         else:
             text = (
-                f"Let me confirm: you will attend Saturday's "
-                f"event with {count} additional guests: "
+                f"Let me confirm: you will attend "
+                f"{event_label} with {count} additional guests: "
                 f"{', '.join(names)}. Is that correct?"
             )
 
@@ -813,7 +1010,7 @@ def agent_reply(state, message, session):
         return respond(
             f"Hello {name}! I'm an AI assistant calling "
             "on behalf of the event organiser. "
-            "Will you be attending Saturday's event?",
+            f"Will you be attending {event_label}?",
             "rsvp",
         )
 
@@ -868,8 +1065,8 @@ def agent_reply(state, message, session):
             )
 
         return respond(
-            "Sorry, will you be attending Saturday's "
-            "event? Please say yes, no, or maybe.",
+            f"Sorry, will you be attending {event_label}? "
+            "Please say yes, no, or maybe.",
             "rsvp",
         )
 
@@ -1007,7 +1204,7 @@ def agent_reply(state, message, session):
 
             return respond(
                 "Sorry about that. Let's correct it. "
-                "Will you be attending Saturday's event?",
+                f"Will you be attending {event_label}?",
                 "rsvp",
             )
 
@@ -1064,8 +1261,12 @@ async def sarvam_call_instructions(request: Request):
             detail="No frontend instructions saved"
         )
 
+    voice = state.get("agent", {})
     return {
-        "call_instructions": instructions
+        "call_instructions": instructions,
+        "language": voice.get("voice_language", ""),
+        "tone": voice.get("voice_tone", "normal"),
+        "speed": voice.get("voice_speed", 1.0),
     }
 
 

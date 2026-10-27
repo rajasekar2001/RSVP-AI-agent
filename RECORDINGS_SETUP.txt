@@ -1,0 +1,15 @@
+CALL RECORDINGS AND TRANSCRIPTS
+
+1. Set RSVP_RECORDINGS_ACCESS_TOKEN in your local .env and Render Environment.
+   Generate a private random token: python -c "import secrets; print(secrets.token_urlsafe(32))"
+2. Keep SARVAM_WEBHOOK_TOKEN, SARVAM_API_KEY and other existing values configured.
+3. Test with one consenting call. Open Campaigns > Call Recordings & Transcripts.
+4. Click Unlock call history, enter the recordings access token, and click Transcript or Recording.
+5. Transcript comes from Sarvam Instant Outbound completion webhook (interaction_transcript).
+6. Recording is fetched on demand via Sarvam Analytics Get Recording endpoint using interaction_id.
+7. No recording is available until the call connects and Sarvam processes its audio.
+8. If your webhook goes to Render, use Render dashboard and not local state.json.
+9. Render local JSON data is not persistent across deploys; use a database in production.
+10. The current app does NOT record the local browser demo as an audio file.
+11. For secure production access, add end-user authentication and authorization; the token is a basic gate.
+12. Obtain participants' consent where legally required, and set retention/deletion policies.

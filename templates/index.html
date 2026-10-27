@@ -44,7 +44,19 @@
           <div class="section-title"><div><small>AGENT</small><h2>RSVP agent</h2></div><span class="ready">● Ready</span></div>
           <label>Instructions</label>
           <textarea id="instructionBox" class="instruction" rows="8">{{ state.agent.prompt }}</textarea>
-          <div class="setup-row"><span>Language</span><b>English</b></div><div class="setup-row"><span>Voice</span><b>Shreya</b></div>
+          <div class="voice-options" style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:14px 0;display:grid;gap:10px">
+            <strong>Voice preferences</strong>
+            <label for="voiceLanguage">Language (empty = keep existing behavior)</label>
+            <select id="voiceLanguage" style="padding:9px;border-radius:8px;border:1px solid #ddd">
+              <option value="">No selection (default)</option><option value="en-IN">English</option><option value="ta-IN">Tamil</option><option value="hi-IN">Hindi</option><option value="te-IN">Telugu</option><option value="ml-IN">Malayalam</option><option value="kn-IN">Kannada</option>
+            </select>
+            <label for="voiceTone">Tone</label>
+            <select id="voiceTone" style="padding:9px;border-radius:8px;border:1px solid #ddd"><option value="normal">Normal</option><option value="friendly">Friendly</option><option value="professional">Professional</option><option value="calm">Calm</option></select>
+            <label for="voiceSpeed">Speaking speed: <b id="voiceSpeedLabel">1.0×</b></label>
+            <input id="voiceSpeed" type="range" min="0.7" max="1.5" step="0.1" value="1.0" />
+            <small>Browser demo applies speed/voice settings. Real Sarvam agent speed and greeting require supported Sarvam configuration.</small>
+          </div>
+          <div class="setup-row"><span>Voice</span><b>Shreya</b></div>
           <button id="saveInstructions" class="black">Save changes</button>
         </div>
         <div class="test-agent-card" id="testAgentCard">
@@ -78,6 +90,15 @@
       <div class="campaign-tools"><label class="upload-btn">＋ Import CSV<input type="file" id="contactsFile" accept=".csv"></label><button id="webhookBtn" class="ghost">⌁ Configure webhook</button></div>
       <p class="muted">CSV columns: <code>name,phone</code>. Browser Demo runs locally. Real Campaign uses Sarvam Voice Agents. Configure a committed Sarvam agent, telephony connection, outbound phone number, workspace API key, and this app’s public HTTPS URL.</p><p id="sarvamStatus" class="muted">Checking Sarvam configuration…</p>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th>RSVP</th><th>Guests</th></tr></thead><tbody id="contactsBody"></tbody></table></div>
+      <section class="recordings-section" style="margin-top:28px;border:1px solid #e5e7eb;border-radius:18px;padding:20px">
+        <h3>Call Recordings &amp; Transcripts</h3>
+        <p class="muted">Protected access. Recordings are fetched from Sarvam for connected calls; transcripts come from the completion webhook.</p>
+        <button id="unlockCalls" type="button" class="ghost">🔒 Unlock call history</button>
+        <button id="reloadCalls" type="button" class="ghost">↻ Refresh calls</button>
+        <div id="callHistory" style="margin-top:12px"></div>
+        <div id="callTranscript" style="white-space:pre-wrap;margin-top:14px;max-height:320px;overflow:auto"></div>
+        <audio id="callRecordingPlayer" controls style="width:100%;display:none;margin-top:14px"></audio>
+      </section>
     </section>
   </div>
 </section>
