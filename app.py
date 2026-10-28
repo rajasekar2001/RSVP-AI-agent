@@ -10,7 +10,7 @@ import threading
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from openpyxl import load_workbook
 import requests
 import uvicorn
@@ -50,11 +50,7 @@ DEFAULT_STATE = {
     },
     "knowledge": [],
     "webhook": {"url": "", "enabled": False},
-    "contacts": [
-        {"name": "Ramesh", "phone": "+919000000001", "status": "Ready", "rsvp": "", "guests": ""},
-        {"name": "Ananya", "phone": "+919000000002", "status": "Ready", "rsvp": "", "guests": ""},
-        {"name": "Karthik", "phone": "+919000000003", "status": "Ready", "rsvp": "", "guests": ""},
-    ],
+    "contacts": [],
     "tests": [
         {"id": 1, "title": "Happy path", "description": "Says yes, brings one guest, gives the name", "status": "ready", "time": ""},
         {"id": 2, "title": "Caller says no", "description": "Declines, agent thanks them and ends the call", "status": "ready", "time": ""},
@@ -82,7 +78,10 @@ def load_state():
 def save_state(state):
     with STATE_LOCK:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Atomic replace avoids partially-written campaign state after a crash.
+        temporary = STATE_FILE.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, STATE_FILE)
 
 
 def elapsed(n):
@@ -714,8 +713,54 @@ async def call_recording(attempt_id: str, request: Request):
     )
 
 
+def webhook_destination_diagnostic(request: Request):
+    """Detect the common localhost → different Render state.json mistake.
+
+    This compares the host serving the dashboard to PUBLIC_BASE_URL.
+    An HTTPS tunnel deliberately forwarding to localhost can be opted in
+    via ALLOW_LOCAL_OUTBOUND_WITH_TUNNEL=true after verification.
+    """
+    destination = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    current_host = (request.url.hostname or "").lower()
+    destination_host = (urlparse(destination).hostname or "").lower()
+    local_host = current_host in ("127.0.0.1", "localhost", "0.0.0.0")
+    override = os.getenv("ALLOW_LOCAL_OUTBOUND_WITH_TUNNEL", "").lower() == "true"
+    mismatched = local_host and destination_host not in (
+        "127.0.0.1", "localhost", "0.0.0.0"
+    ) and not override
+    return {
+        "safe_to_start": not mismatched,
+        "dashboard_host": current_host,
+        "webhook_destination": destination + "/api/sarvam/webhook" if destination else "Not configured",
+        "warning": (
+            "You opened Genie on localhost but Sarvam will send its completion "
+            "webhook to a different server. Start Real Campaign on the public "
+            "Render dashboard instead. If you intentionally use an HTTPS "
+            "tunnel into THIS local port, set ALLOW_LOCAL_OUTBOUND_WITH_TUNNEL=true."
+            if mismatched else ""
+        ),
+    }
+
+
+@app.get("/api/campaign/diagnostics")
+async def campaign_diagnostics(request: Request):
+    result = webhook_destination_diagnostic(request)
+    state = load_state()
+    result["calling_count"] = sum(
+        c.get("status") in {"Starting", "Calling"}
+        for c in state.get("contacts", [])
+    )
+    result["last_webhook_received_at"] = state.get("last_webhook_received_at")
+    result["last_webhook_status"] = state.get("last_webhook_status")
+    result["note"] = "A missing callback cannot be inferred from elapsed time. Check Sarvam delivery logs."
+    return result
+
+
 @app.post("/api/campaign/real/run")
-async def real_campaign():
+async def real_campaign(request: Request):
+    diagnostic = webhook_destination_diagnostic(request)
+    if not diagnostic["safe_to_start"]:
+        raise HTTPException(status_code=409, detail=diagnostic["warning"])
     if not sarvam_configured():
         raise HTTPException(
             status_code=400,
@@ -860,6 +905,8 @@ async def sarvam_webhook(request: Request):
             }[status]
 
         contact["processed_attempt_id"] = attempt_id
+        state["last_webhook_received_at"] = datetime.now().isoformat(timespec="seconds")
+        state["last_webhook_status"] = status
         contact["call_ended_at"] = datetime.now().isoformat(timespec="seconds")
         save_state(state)
         contact_name = contact.get("name", "")

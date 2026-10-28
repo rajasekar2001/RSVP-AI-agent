@@ -18,12 +18,10 @@
   "contacts": [
     {
       "name": "Raja",
-      "phone": "+916381825818",
-      "status": "Calling",
+      "phone": "+918903632050",
+      "status": "Ready",
       "rsvp": "",
-      "guests": "",
-      "attempt_id": "cb9259ec-08a3-47f3-974c-7e2442b91468",
-      "call_status": "calling"
+      "guests": ""
     },
     {
       "name": "Bhushan",
