@@ -1123,7 +1123,9 @@ async def reset():
 def intro_event_details(state):
     """Use only event facts explicitly saved in the Genie prompt/knowledge."""
     prompt = str(state.get("agent", {}).get("prompt", ""))
-    day = re.search(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", prompt, re.I)
+    # Prefer a structured event date over stray old weekdays in instructions.
+    date_field = re.search(r"(?im)^\s*Event (?:date|day)\s*:\s*([^\r\n]+)", prompt)
+    day = re.search(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", date_field.group(1) if date_field else prompt, re.I)
     label = f"{day.group(1).capitalize()}'s event" if day else "the event"
     facts = []
     # Structured event details can be written into the Instructions box as:
@@ -1276,7 +1278,15 @@ def agent_reply(state, message, session):
         )
 
     if stage == "verify_name":
-        # Stop/opt-out requests are handled below, before the normal RSVP step.
+        # Explicit negative identity answers take priority over an incidental yes.
+        if matches(r"\b(no|not me|wrong person|wrong number|i am not|i'm not|not speaking|not here)\b"):
+            session["identity_confirmed"] = False
+            return respond(
+                "Sorry for the confusion. I won't ask you for the guest's RSVP. "
+                "Thank you for your time. Goodbye!",
+                "done", True,
+                {"rsvp": "", "guests": [], "identity_verified": False},
+            )
         if matches(r"\b(yes|yeah|yep|speaking|this is|that's me|correct|right|i am|i'm|indeed)\b"):
             session["identity_confirmed"] = True
             return respond(
@@ -1305,7 +1315,7 @@ def agent_reply(state, message, session):
             "Understood. I'll end this call. Goodbye!",
             "done",
             True,
-            {"rsvp": "Maybe", "guests": []},
+            {"rsvp": "", "guests": [], "identity_verified": False},
         )
 
     # STEP 2: ATTENDANCE
@@ -1504,28 +1514,52 @@ def agent_reply(state, message, session):
     )
 
 
+def _contact_context_data(request: Request, phone: str):
+    """Return only this recipient's saved name and event facts to a trusted hook."""
+    expected = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip()
+    supplied = request.headers.get("X-Instructions-Token", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="SARVAM_INSTRUCTIONS_TOKEN is not configured")
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid instructions token")
+    phone = str(phone or "").strip()
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise HTTPException(status_code=422, detail="Provide recipient phone in E.164 format")
+    current = load_state()
+    matches = [c for c in current.get("contacts", []) if str(c.get("phone", "")).strip() == phone]
+    if len(matches) != 1:
+        raise HTTPException(status_code=404, detail="Exactly one matching contact is required")
+    name = str(matches[0].get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=409, detail="CSV contact name is empty")
+    label, facts = intro_event_details(current)
+    details = ". ".join(facts)
+    return {
+        "contact_name": name,
+        "event_label": label,
+        "event_details": details,
+        "call_instructions": str(current.get("agent", {}).get("prompt", "")).strip(),
+        "identity_question": f"Am I speaking with {name}?",
+        "opening_message": (
+            "Hello, I'm an AI assistant calling on behalf of the event organiser. "
+            + f"This call is about {label}. "
+            + (details + ". " if details else "")
+            + f"Am I speaking with {name}?"
+        ),
+    }
+
+
 @app.get("/api/sarvam/contact-context")
 async def sarvam_contact_context(request: Request, phone: str = ""):
-    """Private on-start hook lookup: supply ONE recipient phone, never the whole CSV."""
-    expected = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip()
-    provided = request.headers.get("X-Instructions-Token", "").strip()
-    if not expected or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    if not phone or not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-        raise HTTPException(status_code=422, detail="Phone must use E.164 format")
-    state = load_state()
-    matches = [c for c in state.get("contacts", []) if c.get("phone") == phone]
-    if len(matches) != 1:
-        raise HTTPException(status_code=404, detail="Contact not found or ambiguous")
-    contact = matches[0]
-    label, facts = intro_event_details(state)
-    return {
-        "contact_name": str(contact.get("name", "")).strip(),
-        "event_label": label,
-        "event_details": ". ".join(facts),
-        "call_instructions": str(state.get("agent", {}).get("prompt", "")).strip(),
-        "identity_question": f"Am I speaking with {contact['name']}?",
-    }
+    return _contact_context_data(request, phone)
+
+
+@app.post("/api/sarvam/contact-context")
+async def sarvam_contact_context_post(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object")
+    return _contact_context_data(request, data.get("phone") or data.get("user_phone_number") or "")
 
 
 @app.get("/api/sarvam/call-instructions")
