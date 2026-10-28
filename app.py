@@ -98,7 +98,7 @@ def extract_guest_names(message):
 
 def get_next_contact(state):
     for contact in state["contacts"]:
-        if contact.get("status") != "Completed":
+        if contact.get("status") not in {"Completed", "Wrong person"}:
             return contact
     return None
 
@@ -589,7 +589,10 @@ async def session_message(request: Request):
         for contact in state["contacts"]:
             if contact["name"].lower() == name.lower():
                 contact["rsvp"] = result.get("rsvp", "")
-                contact["status"] = "Completed"
+                contact["status"] = (
+                    "Wrong person" if result.get("identity_verified") is False
+                    else "Completed"
+                )
                 contact["guests"] = ", ".join(result.get("guests", []))
                 break
         save_state(state)
@@ -1117,6 +1120,26 @@ async def reset():
     return {"ok": True}
 
 
+def intro_event_details(state):
+    """Use only event facts explicitly saved in the Genie prompt/knowledge."""
+    prompt = str(state.get("agent", {}).get("prompt", ""))
+    day = re.search(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", prompt, re.I)
+    label = f"{day.group(1).capitalize()}'s event" if day else "the event"
+    facts = []
+    # Structured event details can be written into the Instructions box as:
+    # Event name: ... / Event time: ... / Event venue: ... / Event date: ...
+    combined = prompt + "\n" + knowledge_text(state)
+    for key, display in (("event name", "Event"), ("event date", "Date"),
+                         ("event time", "Time"), ("event venue", "Venue"),
+                         ("event location", "Location")):
+        match = re.search(rf"(?im)^\s*{re.escape(key)}\s*:\s*([^\r\n]+)", combined)
+        if match:
+            val = match.group(1).strip()[:160]
+            if val and val.lower() not in ("tbd", "unknown", "n/a"):
+                facts.append(f"{display}: {val}")
+    return label, facts
+
+
 
 def agent_reply(state, message, session):
     """RSVP conversation with final confirmation."""
@@ -1167,8 +1190,17 @@ def agent_reply(state, message, session):
             names = session.get("guest_names", [])
             count = session.get("guest_count", 0)
             rsvp = session.get("rsvp", "")
-            if stage == "opening":
-                text = f"வணக்கம் {name}! நான் நிகழ்ச்சி ஏற்பாட்டாளரின் AI உதவியாளர். {tamil_event} நீங்கள் வருகிறீர்களா?"
+            if next_stage == "verify_name" and stage == "opening":
+                event_label_ta, facts_ta = intro_event_details(state)
+                details_ta = ". ".join(facts_ta)
+                text = f"வணக்கம்! நான் நிகழ்ச்சி ஏற்பாட்டாளரின் AI உதவியாளர். {tamil_event} தொடர்பாக அழைக்கிறேன். "
+                if details_ta:
+                    text += details_ta + ". "
+                text += f"நான் {name} அவர்களிடம்தான் பேசுகிறேனா?"
+            elif stage == "verify_name" and next_stage == "rsvp":
+                text = f"நன்றி {name}. {tamil_event} நீங்கள் வருகிறீர்களா?"
+            elif stage == "verify_name" and next_stage == "verify_name":
+                text = f"நான் {name} அவர்களிடம்தான் பேசுகிறேனா? ஆம் அல்லது இல்லை என்று சொல்லுங்கள்."
             elif next_stage == "guest_count":
                 text = "மிகவும் நல்லது! உங்களுடன் கூடுதல் விருந்தினர்கள் வருகிறார்களா? எத்தனை பேர் வருவார்கள்?"
             elif next_stage in ("guest_names", "guest_names_more"):
@@ -1230,13 +1262,39 @@ def agent_reply(state, message, session):
 
         return respond(text, "confirm")
 
-    # STEP 1: GREETING
+    # STEP 1: STATE EVENT DETAILS AND VERIFY CSV CONTACT'S NAME
     if stage == "opening":
+        event_label, facts = intro_event_details(state)
+        details = ". ".join(facts)
+        description = f"This call is about {event_label}."
+        if details:
+            description += f" {details}."
         return respond(
-            f"Hello {name}! I'm an AI assistant calling "
-            "on behalf of the event organiser. "
-            f"Will you be attending {event_label}?",
-            "rsvp",
+            f"Hello! I'm an AI assistant calling on behalf of the event organiser. "
+            f"{description} Am I speaking with {name}?",
+            "verify_name",
+        )
+
+    if stage == "verify_name":
+        # Stop/opt-out requests are handled below, before the normal RSVP step.
+        if matches(r"\b(yes|yeah|yep|speaking|this is|that's me|correct|right|i am|i'm|indeed)\b"):
+            session["identity_confirmed"] = True
+            return respond(
+                f"Thank you, {name}. Will you be attending {event_label}?",
+                "rsvp",
+            )
+        if matches(r"\b(no|not me|wrong person|wrong number|i am not|i'm not)\b"):
+            session["identity_confirmed"] = False
+            return respond(
+                "Sorry for the confusion. I won't ask you for the guest's RSVP. "
+                "Thank you for your time. Goodbye!",
+                "done", True,
+                {"rsvp": "", "guests": [], "identity_verified": False},
+            )
+        return respond(
+            f"Sorry, could you confirm whether I'm speaking with {name}? "
+            "Please say yes or no.",
+            "verify_name",
         )
 
     if matches(
@@ -1444,6 +1502,30 @@ def agent_reply(state, message, session):
         "done",
         True,
     )
+
+
+@app.get("/api/sarvam/contact-context")
+async def sarvam_contact_context(request: Request, phone: str = ""):
+    """Private on-start hook lookup: supply ONE recipient phone, never the whole CSV."""
+    expected = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip()
+    provided = request.headers.get("X-Instructions-Token", "").strip()
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not phone or not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise HTTPException(status_code=422, detail="Phone must use E.164 format")
+    state = load_state()
+    matches = [c for c in state.get("contacts", []) if c.get("phone") == phone]
+    if len(matches) != 1:
+        raise HTTPException(status_code=404, detail="Contact not found or ambiguous")
+    contact = matches[0]
+    label, facts = intro_event_details(state)
+    return {
+        "contact_name": str(contact.get("name", "")).strip(),
+        "event_label": label,
+        "event_details": ". ".join(facts),
+        "call_instructions": str(state.get("agent", {}).get("prompt", "")).strip(),
+        "identity_question": f"Am I speaking with {contact['name']}?",
+    }
 
 
 @app.get("/api/sarvam/call-instructions")
