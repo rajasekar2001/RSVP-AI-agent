@@ -933,6 +933,184 @@ async def sarvam_webhook(request: Request):
     return {"ok": True, "attempt_id": attempt_id, "status": status}
 
 
+
+# -----------------------------------------------------------
+# RECOVER MISSED OUTBOUND COMPLETION WEBHOOKS VIA SARVAM ANALYTICS
+# Sarvam Analytics can be delayed/cached. Never guess completion.
+# -----------------------------------------------------------
+from datetime import timedelta, timezone
+
+RECONCILE_LOCK = threading.Lock()
+
+
+def _sarvam_attempt_from_analytics(attempt_id: str):
+    from sarvam_voice import (
+        SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID,
+        SARVAM_WORKSPACE_ID, SARVAM_APP_ID,
+    )
+    api_url = (
+        f"{SARVAM_API_BASE}/api/analytics/v1/"
+        f"{quote(SARVAM_ORG_ID, safe='')}/"
+        f"{quote(SARVAM_WORKSPACE_ID, safe='')}/"
+        f"{quote(SARVAM_APP_ID, safe='')}/attempts"
+    )
+    now = datetime.now(timezone.utc)
+    params = {
+        "start_datetime": (now - timedelta(days=7)).isoformat(),
+        "end_datetime": (now + timedelta(minutes=2)).isoformat(),
+        "filter_conditions": json.dumps([{
+            "field": "attempt_id", "operator": "equals", "value": attempt_id
+        }]),
+        "limit": 20,
+    }
+    res = requests.get(api_url, headers={"X-API-Key": SARVAM_API_KEY},
+                       params=params, timeout=20)
+    if not res.ok:
+        raise RuntimeError(f"Sarvam Analytics HTTP {res.status_code}")
+    body = res.json()
+    for item in body.get("items", []):
+        if str(item.get("attempt_id")) == attempt_id:
+            return item
+    return None
+
+
+def _sarvam_transcript(interaction_id: str):
+    from sarvam_voice import (
+        SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID,
+        SARVAM_WORKSPACE_ID, SARVAM_APP_ID,
+    )
+    if not interaction_id or "/" not in interaction_id:
+        return []
+    url = (
+        f"{SARVAM_API_BASE}/api/analytics/v1/"
+        f"{quote(SARVAM_ORG_ID, safe='')}/"
+        f"{quote(SARVAM_WORKSPACE_ID, safe='')}/"
+        f"{quote(SARVAM_APP_ID, safe='')}/transcripts/"
+        f"{quote(interaction_id, safe='')}"
+    )
+    try:
+        res = requests.get(url, headers={"X-API-Key": SARVAM_API_KEY}, timeout=15)
+        if not res.ok:
+            return []
+        return [
+            {
+                "role": "agent" if m.get("role") in {"assistant", "agent", "bot"} else "user",
+                "en_text": m.get("content") or m.get("en_text") or "",
+            }
+            for m in res.json().get("messages", [])
+            if isinstance(m, dict)
+        ]
+    except (requests.RequestException, ValueError, TypeError):
+        return []
+
+
+def reconcile_one_call(attempt_id: str):
+    """Reconcile strictly from confirmed Analytics result; never dial here."""
+    with RECONCILE_LOCK:
+        state = load_state()
+        contact = find_contact_by_attempt_id(state, attempt_id)
+        if not contact:
+            return {"attempt_id": attempt_id, "result": "unknown_local_attempt"}
+        if contact.get("status") not in {"Calling", "Starting"}:
+            return {"attempt_id": attempt_id, "result": "already_final"}
+
+        item = _sarvam_attempt_from_analytics(attempt_id)
+        if not item:
+            return {"attempt_id": attempt_id, "result": "not_yet_in_analytics"}
+
+        status = str(item.get("connectivity_status") or "").lower()
+        if status not in {"connected", "no_answer", "busy", "failed"}:
+            return {"attempt_id": attempt_id, "result": "not_final_in_analytics"}
+
+        # For connected calls, end_datetime is the authoritative end signal.
+        # For other outcomes, require a completed timestamp or explicit end reason.
+        if not (item.get("end_datetime") or item.get("ended_by") or
+                item.get("end_reason")):
+            return {"attempt_id": attempt_id, "result": "waiting_for_end_evidence"}
+
+        interaction_id = str(item.get("interaction_id") or "")
+        transcript = _sarvam_transcript(interaction_id) if status == "connected" else []
+        variables = item.get("agent_variables") or {}
+        rsvp, guests = extract_sarvam_rsvp(variables)
+
+        with STATE_LOCK:
+            state = load_state()
+            contact = find_contact_by_attempt_id(state, attempt_id)
+            if not contact or contact.get("status") not in {"Calling", "Starting"}:
+                return {"attempt_id": attempt_id, "result": "already_final"}
+            contact["call_status"] = status
+            contact["interaction_id"] = interaction_id or None
+            contact["duration"] = item.get("duration_in_seconds")
+            contact["failure_reason"] = item.get("failure_reason") or ""
+            if transcript: contact["transcript"] = transcript
+            if variables: contact["sarvam_variables"] = variables
+            if status == "connected":
+                contact["status"] = "Completed" if rsvp else "Call ended"
+                if rsvp:
+                    contact["rsvp"] = rsvp
+                    contact["guests"] = ", ".join(guests)
+            else:
+                contact["status"] = {"no_answer": "No answer", "busy": "Busy", "failed": "Failed"}[status]
+            contact["processed_attempt_id"] = attempt_id
+            contact["call_ended_at"] = item.get("end_datetime") or datetime.now(timezone.utc).isoformat()
+            contact["reconciled_from"] = "sarvam_analytics"
+            save_state(state)
+        print("SARVAM ANALYTICS RECONCILED:", attempt_id, status, flush=True)
+        return {"attempt_id": attempt_id, "result": "updated", "status": status}
+
+
+def reconcile_pending_calls():
+    state = load_state()
+    ids = [str(c.get("attempt_id")) for c in state.get("contacts", [])
+           if c.get("status") == "Calling" and c.get("attempt_id")]
+    outcomes = []
+    for attempt_id in ids[:5]:
+        try:
+            outcomes.append(reconcile_one_call(attempt_id))
+        except Exception as exc:
+            print("SARVAM ANALYTICS CHECK FAILED:", attempt_id, type(exc).__name__, flush=True)
+            outcomes.append({"attempt_id": attempt_id, "result": "upstream_error"})
+    return outcomes
+
+
+@app.post("/api/campaign/reconcile")
+async def reconcile_campaign(request: Request):
+    # Same private credential as protected transcripts/recordings.
+    require_recordings_auth(request)
+    results = await asyncio.to_thread(reconcile_pending_calls)
+    # Do not automatically redial anything. Only move on after a verified
+    # terminal outcome and only when another Ready contact exists.
+    if any(item["result"] == "updated" for item in results):
+        asyncio.create_task(start_next_real_call_after_delay())
+    return {"ok": True, "results": results}
+
+
+async def _reconciliation_watchdog():
+    # The Analytics endpoint is cached (~60 seconds); keep polling modest.
+    while True:
+        await asyncio.sleep(90)
+        try:
+            results = await asyncio.to_thread(reconcile_pending_calls)
+            if any(item["result"] == "updated" for item in results):
+                asyncio.create_task(start_next_real_call_after_delay())
+        except Exception as exc:
+            print("SARVAM WATCHDOG ERROR:", type(exc).__name__, flush=True)
+
+
+@app.on_event("startup")
+async def start_reconciliation_watchdog():
+    app.state.reconcile_task = asyncio.create_task(_reconciliation_watchdog())
+
+
+@app.on_event("shutdown")
+async def stop_reconciliation_watchdog():
+    task = getattr(app.state, "reconcile_task", None)
+    if task:
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
+
+
 @app.post("/api/reset")
 async def reset():
     save_state(deepcopy(DEFAULT_STATE))

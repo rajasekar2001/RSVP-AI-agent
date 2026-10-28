@@ -1125,3 +1125,24 @@ if (unlockCallsButton) {
     };
 }
 document.querySelector("#reloadCalls")?.addEventListener("click", refreshCallHistory);
+
+// Manually reconcile completed Sarvam attempts when a webhook was missed.
+document.querySelector("#syncSarvamCalls")?.addEventListener("click", async () => {
+    if (!recordingsAccessToken) {
+        toast("Unlock call history first.", 5000);
+        return;
+    }
+    try {
+        const response = await fetch("/api/campaign/reconcile", {
+            method: "POST",
+            headers: {"X-Recordings-Token": recordingsAccessToken},
+            cache: "no-store"
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        const updated = (data.results || []).filter(x => x.result === "updated").length;
+        toast(updated ? `${updated} call(s) synchronized.` : "No verified finished call found yet.", 6000);
+        await refreshState();
+        await refreshCallHistory();
+    } catch (error) { toast(`Sync failed: ${error.message}`, 6500); }
+});
