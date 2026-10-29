@@ -288,19 +288,63 @@ def normalize_guests(value):
 
 
 def extract_sarvam_rsvp(final_vars):
-    final_vars = final_vars or {}
+    """Accept JSON strings and typed variable values; never treat connected as RSVP."""
+    if isinstance(final_vars, str):
+        try:
+            final_vars = json.loads(final_vars)
+        except ValueError:
+            return "", []
+    if not isinstance(final_vars, dict):
+        return "", []
+    values = {}
+    for key, value in final_vars.items():
+        if isinstance(value, dict) and "value" in value:
+            value = value["value"]
+        values[str(key).strip().lower()] = value
     rsvp = ""
-    for key in ("rsvp", "RSVP", "attendance", "attending", "is_attending", "call_outcome"):
-        if key in final_vars and final_vars[key] not in (None, ""):
-            rsvp = normalize_rsvp(final_vars[key])
+    for key in ("rsvp", "rsvp_status", "attendance", "attendance_status", "attending", "is_attending", "call_outcome"):
+        value = normalize_rsvp(values.get(key))
+        if value in {"Yes", "No"}:
+            rsvp = value
             break
-
+        if str(value).lower() in {"maybe", "tentative", "unsure"}:
+            rsvp = "Maybe"
+            break
     guests = []
     for key in ("guests", "guest_names", "plus_ones", "plus_one_names", "guest_list"):
-        if key in final_vars and final_vars[key] not in (None, ""):
-            guests = normalize_guests(final_vars[key])
+        value = values.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        if value not in (None, ""):
+            guests = normalize_guests(value)
             break
+    guests = [name for name in guests if name.lower() not in {"none", "null", "n/a", "no guests", "0"}]
     return rsvp, guests
+
+
+def merge_call_result(contact, variables):
+    previous = contact.get("sarvam_variables")
+    merged = dict(previous) if isinstance(previous, dict) else {}
+    if isinstance(variables, str):
+        try:
+            variables = json.loads(variables)
+        except ValueError:
+            variables = {}
+    if isinstance(variables, dict):
+        merged.update({k: v for k, v in variables.items() if v is not None and v != ""})
+    contact["sarvam_variables"] = merged
+    rsvp, guests = extract_sarvam_rsvp(merged)
+    if rsvp:
+        contact["rsvp"] = rsvp
+        contact["guests"] = ", ".join(guests) if rsvp != "No" else ""
+        contact["status"] = "Completed"
+        contact["result_status"] = "RSVP received"
+    elif not contact.get("rsvp"):
+        contact["status"] = "Call ended"
+        contact["result_status"] = "RSVP not received — awaiting extraction"
 
 
 def start_real_contact_call(contact):
@@ -401,6 +445,112 @@ async def build(request: Request):
     save_state(state)
     return {"ok": True, "agent": state["agent"]}
 
+def _contact_context_data(request: Request, phone: str):
+    expected = os.getenv(
+        "SARVAM_INSTRUCTIONS_TOKEN", ""
+    ).strip()
+
+    supplied = request.headers.get(
+        "X-Instructions-Token", ""
+    ).strip()
+
+    if not expected or not supplied:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing instructions authentication"
+        )
+
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid instructions authentication"
+        )
+
+    phone = str(phone or "").strip()
+
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid recipient phone"
+        )
+
+    current = load_state()
+
+    contact = next(
+        (
+            row for row in current.get("contacts", [])
+            if str(row.get("phone", "")).strip() == phone
+        ),
+        None
+    )
+
+    if not contact:
+        raise HTTPException(
+            status_code=404,
+            detail="Recipient not found in uploaded CSV"
+        )
+
+    name = str(contact.get("name", "")).strip()
+
+    if not name:
+        raise HTTPException(
+            status_code=409,
+            detail="Recipient name is missing"
+        )
+
+    event_label, event_facts = intro_event_details(current)
+    details = ". ".join(event_facts)
+
+    return {
+        "contact_name": name,
+        "event_label": event_label,
+        "event_details": details,
+        "identity_question": f"Am I speaking with {name}?",
+        "opening_message": (
+            "Hello, I'm an AI assistant calling on "
+            "behalf of the event organiser. "
+            f"This call is about {event_label}. "
+            + (details + ". " if details else "")
+            + f"Am I speaking with {name}?"
+        ),
+        "call_instructions": (
+            "First speak opening_message exactly, then WAIT for the identity answer. "
+            "A yes to the identity question is NOT an RSVP. If wrong person, politely end. "
+            "After identity is confirmed ask attendance, additional guest count, and ALL guest names. "
+            "Read back attendance and guests, allow corrections, and thank the recipient. "
+            "Do not invent event facts or guest names. "
+            + str(current.get("agent", {}).get("prompt", "")).strip()
+        )
+    }
+
+
+@app.get("/api/sarvam/contact-context")
+async def sarvam_contact_context(
+    request: Request,
+    phone: str = ""
+):
+    return _contact_context_data(request, phone)
+
+
+@app.post("/api/sarvam/contact-context")
+async def sarvam_contact_context_post(
+    request: Request
+):
+    body = await request.json()
+
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Expected JSON object"
+        )
+
+    phone = (
+        body.get("phone")
+        or body.get("user_phone_number")
+        or ""
+    )
+
+    return _contact_context_data(request, phone)
 
 @app.post("/api/knowledge")
 async def add_knowledge(file: UploadFile = File(...)):
@@ -880,9 +1030,7 @@ async def sarvam_webhook(request: Request):
         if contact is None:
             print("SARVAM WEBHOOK UNKNOWN ATTEMPT:", attempt_id, flush=True)
             raise HTTPException(status_code=404, detail="Unknown attempt ID on this server")
-        if contact.get("processed_attempt_id") == attempt_id:
-            print("SARVAM WEBHOOK DUPLICATE:", attempt_id, flush=True)
-            return {"ok": True, "duplicate": True}
+        already_processed = contact.get("processed_attempt_id") == attempt_id
 
         contact["attempt_id"] = attempt_id
         contact["call_status"] = status
@@ -892,16 +1040,9 @@ async def sarvam_webhook(request: Request):
         if payload.get("interaction_transcript") is not None:
             contact["transcript"] = payload["interaction_transcript"]
         final_vars = payload.get("final_agent_variables") or payload.get("output_agent_variables") or {}
-        contact["sarvam_variables"] = final_vars
 
         if status == "connected":
-            rsvp, guests = extract_sarvam_rsvp(final_vars)
-            if rsvp:
-                contact["rsvp"] = rsvp
-                contact["guests"] = ", ".join(guests)
-                contact["status"] = "Completed"
-            else:
-                contact["status"] = "Call ended"
+            merge_call_result(contact, final_vars)
         else:
             contact["status"] = {
                 "no_answer": "No answer", "busy": "Busy", "failed": "Failed"
@@ -932,7 +1073,7 @@ async def sarvam_webhook(request: Request):
                 print("User webhook failed:", type(exc).__name__, flush=True)
         asyncio.create_task(send_optional_callback())
 
-    asyncio.create_task(start_next_real_call_after_delay())
+    asyncio.create_task(start_next_real_call_after_delay()) if not already_processed else None
     return {"ok": True, "attempt_id": attempt_id, "status": status}
 
 
@@ -1014,7 +1155,7 @@ def reconcile_one_call(attempt_id: str):
         contact = find_contact_by_attempt_id(state, attempt_id)
         if not contact:
             return {"attempt_id": attempt_id, "result": "unknown_local_attempt"}
-        if contact.get("status") not in {"Calling", "Starting"}:
+        if contact.get("status") not in {"Calling", "Starting", "Call ended"}:
             return {"attempt_id": attempt_id, "result": "already_final"}
 
         item = _sarvam_attempt_from_analytics(attempt_id)
@@ -1039,19 +1180,15 @@ def reconcile_one_call(attempt_id: str):
         with STATE_LOCK:
             state = load_state()
             contact = find_contact_by_attempt_id(state, attempt_id)
-            if not contact or contact.get("status") not in {"Calling", "Starting"}:
+            if not contact or contact.get("status") not in {"Calling", "Starting", "Call ended"}:
                 return {"attempt_id": attempt_id, "result": "already_final"}
             contact["call_status"] = status
             contact["interaction_id"] = interaction_id or None
             contact["duration"] = item.get("duration_in_seconds")
             contact["failure_reason"] = item.get("failure_reason") or ""
             if transcript: contact["transcript"] = transcript
-            if variables: contact["sarvam_variables"] = variables
             if status == "connected":
-                contact["status"] = "Completed" if rsvp else "Call ended"
-                if rsvp:
-                    contact["rsvp"] = rsvp
-                    contact["guests"] = ", ".join(guests)
+                merge_call_result(contact, variables)
             else:
                 contact["status"] = {"no_answer": "No answer", "busy": "Busy", "failed": "Failed"}[status]
             contact["processed_attempt_id"] = attempt_id
@@ -1065,7 +1202,7 @@ def reconcile_one_call(attempt_id: str):
 def reconcile_pending_calls():
     state = load_state()
     ids = [str(c.get("attempt_id")) for c in state.get("contacts", [])
-           if c.get("status") == "Calling" and c.get("attempt_id")]
+           if c.get("status") in {"Calling", "Call ended"} and c.get("attempt_id")]
     outcomes = []
     for attempt_id in ids[:5]:
         try:
@@ -1514,52 +1651,52 @@ def agent_reply(state, message, session):
     )
 
 
-def _contact_context_data(request: Request, phone: str):
-    """Return only this recipient's saved name and event facts to a trusted hook."""
-    expected = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip()
-    supplied = request.headers.get("X-Instructions-Token", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="SARVAM_INSTRUCTIONS_TOKEN is not configured")
-    if not supplied or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="Invalid instructions token")
-    phone = str(phone or "").strip()
-    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-        raise HTTPException(status_code=422, detail="Provide recipient phone in E.164 format")
-    current = load_state()
-    matches = [c for c in current.get("contacts", []) if str(c.get("phone", "")).strip() == phone]
-    if len(matches) != 1:
-        raise HTTPException(status_code=404, detail="Exactly one matching contact is required")
-    name = str(matches[0].get("name", "")).strip()
-    if not name:
-        raise HTTPException(status_code=409, detail="CSV contact name is empty")
-    label, facts = intro_event_details(current)
-    details = ". ".join(facts)
-    return {
-        "contact_name": name,
-        "event_label": label,
-        "event_details": details,
-        "call_instructions": str(current.get("agent", {}).get("prompt", "")).strip(),
-        "identity_question": f"Am I speaking with {name}?",
-        "opening_message": (
-            "Hello, I'm an AI assistant calling on behalf of the event organiser. "
-            + f"This call is about {label}. "
-            + (details + ". " if details else "")
-            + f"Am I speaking with {name}?"
-        ),
-    }
+# def _contact_context_data(request: Request, phone: str):
+#     """Return only this recipient's saved name and event facts to a trusted hook."""
+#     expected = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip()
+#     supplied = request.headers.get("X-Instructions-Token", "").strip()
+#     if not expected:
+#         raise HTTPException(status_code=503, detail="SARVAM_INSTRUCTIONS_TOKEN is not configured")
+#     if not supplied or not hmac.compare_digest(supplied, expected):
+#         raise HTTPException(status_code=401, detail="Invalid instructions token")
+#     phone = str(phone or "").strip()
+#     if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+#         raise HTTPException(status_code=422, detail="Provide recipient phone in E.164 format")
+#     current = load_state()
+#     matches = [c for c in current.get("contacts", []) if str(c.get("phone", "")).strip() == phone]
+#     if len(matches) != 1:
+#         raise HTTPException(status_code=404, detail="Exactly one matching contact is required")
+#     name = str(matches[0].get("name", "")).strip()
+#     if not name:
+#         raise HTTPException(status_code=409, detail="CSV contact name is empty")
+#     label, facts = intro_event_details(current)
+#     details = ". ".join(facts)
+#     return {
+#         "contact_name": name,
+#         "event_label": label,
+#         "event_details": details,
+#         "call_instructions": str(current.get("agent", {}).get("prompt", "")).strip(),
+#         "identity_question": f"Am I speaking with {name}?",
+#         "opening_message": (
+#             "Hello, I'm an AI assistant calling on behalf of the event organiser. "
+#             + f"This call is about {label}. "
+#             + (details + ". " if details else "")
+#             + f"Am I speaking with {name}?"
+#         ),
+#     }
 
 
-@app.get("/api/sarvam/contact-context")
-async def sarvam_contact_context(request: Request, phone: str = ""):
-    return _contact_context_data(request, phone)
+# @app.get("/api/sarvam/contact-context")
+# async def sarvam_contact_context(request: Request, phone: str = ""):
+#     return _contact_context_data(request, phone)
 
 
-@app.post("/api/sarvam/contact-context")
-async def sarvam_contact_context_post(request: Request):
-    data = await request.json()
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=422, detail="Expected a JSON object")
-    return _contact_context_data(request, data.get("phone") or data.get("user_phone_number") or "")
+# @app.post("/api/sarvam/contact-context")
+# async def sarvam_contact_context_post(request: Request):
+#     data = await request.json()
+#     if not isinstance(data, dict):
+#         raise HTTPException(status_code=422, detail="Expected a JSON object")
+#     return _contact_context_data(request, data.get("phone") or data.get("user_phone_number") or "")
 
 
 @app.get("/api/sarvam/call-instructions")

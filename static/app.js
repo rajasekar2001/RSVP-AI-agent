@@ -165,7 +165,7 @@ function render() {
             $("#contactsBody").innerHTML = contacts.map(contact => {
                 const status = String(contact.status || "Ready");
                 const callStatus = String(contact.call_status || "");
-                const failure = String(contact.failure_reason || "");
+                const failure = String(contact.failure_reason || "").replace(/^NO_FAILURE_REASON$/i, "");
                 const attemptId = String(contact.attempt_id || "");
 
                 const callDetail =
@@ -203,7 +203,7 @@ function render() {
                             ${failureDetail}
                             ${attemptDetail}
                         </td>
-                        <td>${escapeHtml(contact.rsvp || "—")}</td>
+                        <td>${escapeHtml(contact.rsvp || (status === "Call ended" ? "Awaiting RSVP result" : "—"))}</td>
                         <td>${escapeHtml(contact.guests || "—")}</td>
                     </tr>
                 `;

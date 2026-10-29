@@ -22,10 +22,10 @@
       "status": "Call ended",
       "rsvp": "",
       "guests": "",
-      "attempt_id": "2c075bbe-e017-4a66-914a-8b6cc9a31da8",
+      "attempt_id": "ec73d521-049f-4a63-8713-362e6864e64c",
       "call_status": "connected",
-      "interaction_id": "20261028/1be2283a-17:22:20-05fc72f8",
-      "duration": 46.49795913696289,
+      "interaction_id": "20261028/1be2283a-22:41:05-317449e3",
+      "duration": 44.43891143798828,
       "failure_reason": "NO_FAILURE_REASON",
       "transcript": [
         {
@@ -46,32 +46,25 @@
         },
         {
           "role": "agent",
-          "en_text": "ठीक है। क्या आप मुझे उन दोनों guests के नाम बता सकते हैं? एक-एक करके बताइए।"
+          "en_text": "ठीक है। क्या आप मुझे उन दोनों guests के नाम बता सकते हैं? पहले एक का नाम बता दीजिए।"
         },
         {
           "role": "user",
-          "en_text": "ஒருத்தன் பேரு ராமு, ராம். இன்னொருத்தன் பேரு கிஷோர்."
+          "en_text": "प्रेम एंड कुमार।"
         },
         {
           "role": "agent",
-          "en_text": "ஓ சரி. அப்போ நீங்க வர்றீங்க, கூடவே ராமு, ராம் மற்றும் கிஷோர்னு மொத்தம் மூணு guests வர்றாங்க. நான் சொன்ன விவரங்கள் எல்லாம் correct-ஆ?"
-        },
-        {
-          "role": "user",
-          "en_text": "ஆ சரிதான், ரொம்ப சரிதான்."
-        },
-        {
-          "role": "agent",
-          "en_text": "ரொம்ப நன்றி. அப்போ Saturday event-ல உங்களை பார்க்கிறோம். Bye!"
+          "en_text": "अच्छा, तो प्रेम और कुमार। मतलब आप खुद और आपके साथ दो guests, प्रेम और कुमार, आप लोग शनिवार के इवेंट में आ रहे हैं। क्या यह सारी details सही हैं? नमस्ते, क्या आप अभी भी कॉल पर हैं?"
         }
       ],
       "sarvam_variables": {
         "user_name": "Manan",
-        "call_summary": "The agent confirmed the user's attendance for Saturday's event and registered three additional guests: Ramu, Ram, and Kishore."
+        "call_summary": "The agent confirmed the user's attendance for Saturday's event and noted that the user will be bringing two guests, Prem and Kumar."
       },
-      "processed_attempt_id": "2c075bbe-e017-4a66-914a-8b6cc9a31da8",
-      "call_ended_at": "2026-10-28T11:53:07",
-      "reconciled_from": "sarvam_analytics"
+      "processed_attempt_id": "ec73d521-049f-4a63-8713-362e6864e64c",
+      "call_ended_at": "2026-10-28T17:11:50",
+      "reconciled_from": "sarvam_analytics",
+      "result_status": "RSVP not received — awaiting extraction"
     }
   ],
   "tests": [
