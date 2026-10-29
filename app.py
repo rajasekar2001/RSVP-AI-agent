@@ -354,6 +354,7 @@ def start_real_contact_call(contact):
         real_contact = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
         if not real_contact or real_contact.get("status") not in {"Ready", "Queued"}:
             return None
+        build_real_call_context(state, real_contact)
         real_contact["status"] = "Starting"
         save_state(state)
         try:
@@ -476,13 +477,11 @@ def _contact_context_data(request: Request, phone: str):
 
     current = load_state()
 
-    contact = next(
-        (
-            row for row in current.get("contacts", [])
-            if str(row.get("phone", "")).strip() == phone
-        ),
-        None
-    )
+    matches = [row for row in current.get("contacts", [])
+               if str(row.get("phone", "")).strip() == phone]
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="Duplicate CSV phone: keep exactly one name per phone")
+    contact = matches[0] if matches else None
 
     if not contact:
         raise HTTPException(
@@ -498,29 +497,45 @@ def _contact_context_data(request: Request, phone: str):
             detail="Recipient name is missing"
         )
 
-    event_label, event_facts = intro_event_details(current)
-    details = ". ".join(event_facts)
+    return build_real_call_context(current, contact)
 
+
+def build_real_call_context(state, contact):
+    """Generate the greeting and identity gate from this CSV row only."""
+    name = str(contact.get("name", "")).strip()
+    if not name:
+        raise ValueError("Upload a CSV contact with a nonempty name before calling")
+    label, facts = intro_event_details(state)
+    event_name = next((f.split(":", 1)[1].strip() for f in facts if f.startswith("Event:")), label)
+    details = ". ".join(f for f in facts if not f.startswith("Event:"))
+    opening = (
+        "Hello, I'm an AI assistant calling on behalf of the event organiser. "
+        f"We would like to invite you to {event_name}. "
+        + (details + ". " if details else "")
+        + f"Am I speaking with {name}?"
+    )
+    instructions = str(state.get("agent", {}).get("prompt", "")).strip()
+    flow = (
+        "REQUIRED CALL ORDER: Start by speaking this exact opening and nothing after it: "
+        + opening + "\nWAIT for an answer. The only expected invitee is " + name + ". "
+        "Never read a list of CSV names. Never ask attendance before identity confirmation. "
+        "Yes here confirms identity ONLY, not RSVP. If wrong person, apologise and end; "
+        "do not ask this person for attendance or guests. If identity is unclear, ask again. "
+        "After identity is confirmed ask: Will you be attending " + event_name + "? "
+        "WAIT. If attending ask additional guest count excluding the invitee, then collect "
+        "ALL guest names. For zero guests do not ask names. If declining record No and "
+        "no guests. If unsure record Maybe. Read back the RSVP and all supplied names, "
+        "ask for corrections, then thank them and end. Never invent event details or names. "
+        "Never treat call connected or identity confirmed as an attendance answer. "
+        "If this flow conflicts with other instructions, follow this required call order."
+    )
     return {
         "contact_name": name,
-        "event_label": event_label,
+        "event_label": event_name,
         "event_details": details,
         "identity_question": f"Am I speaking with {name}?",
-        "opening_message": (
-            "Hello, I'm an AI assistant calling on "
-            "behalf of the event organiser. "
-            f"This call is about {event_label}. "
-            + (details + ". " if details else "")
-            + f"Am I speaking with {name}?"
-        ),
-        "call_instructions": (
-            "First speak opening_message exactly, then WAIT for the identity answer. "
-            "A yes to the identity question is NOT an RSVP. If wrong person, politely end. "
-            "After identity is confirmed ask attendance, additional guest count, and ALL guest names. "
-            "Read back attendance and guests, allow corrections, and thank the recipient. "
-            "Do not invent event facts or guest names. "
-            + str(current.get("agent", {}).get("prompt", "")).strip()
-        )
+        "opening_message": opening,
+        "call_instructions": instructions + "\n\n" + flow,
     }
 
 
