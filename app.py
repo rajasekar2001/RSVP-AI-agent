@@ -1770,3 +1770,95 @@ if __name__ == "__main__":
     print("Sarvam webhook endpoint: /api/sarvam/webhook")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
+
+import csv
+import io
+import hmac
+import os
+from fastapi import Request, HTTPException
+from fastapi.responses import StreamingResponse
+
+
+@app.get("/api/campaign/sarvam-contacts")
+async def export_sarvam_contacts(request: Request):
+    """
+    Export uploaded Genie contacts in Sarvam's
+    campaign-variable format.
+
+    Protected because it contains guest names
+    and telephone numbers.
+    """
+
+    expected = os.getenv(
+        "RSVP_RECORDINGS_ACCESS_TOKEN", ""
+    ).strip()
+
+    supplied = request.headers.get(
+        "X-Recordings-Token", ""
+    ).strip()
+
+    if (
+        not expected
+        or not supplied
+        or not hmac.compare_digest(expected, supplied)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized"
+        )
+
+    state = load_state()
+
+    agent = state.get("agent", {})
+    instructions = str(
+        agent.get("prompt", "")
+    ).strip()
+
+    # Use the same event-details extraction
+    # function already present in your project.
+    event_label, event_facts = intro_event_details(state)
+
+    event_details = ". ".join(event_facts)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "phone",
+        "contact_name",
+        "event_label",
+        "event_details",
+        "identity_question",
+        "call_instructions"
+    ])
+
+    for contact in state.get("contacts", []):
+        name = str(contact.get("name", "")).strip()
+        phone = str(contact.get("phone", "")).strip()
+
+        if not name or not phone:
+            continue
+
+        if not phone.startswith("+"):
+            continue
+
+        writer.writerow([
+            phone,
+            name,
+            event_label,
+            event_details,
+            f"Am I speaking with {name}?",
+            instructions
+        ])
+
+    output.seek(0)
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition":
+                'attachment; filename="sarvam_rsvp_contacts.csv"',
+            "Cache-Control": "no-store"
+        }
+    )
