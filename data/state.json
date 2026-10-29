@@ -19,11 +19,60 @@
     {
       "name": "Raja",
       "phone": "+918903632050",
-      "status": "Calling",
+      "status": "Call ended",
       "rsvp": "",
       "guests": "",
       "attempt_id": "118d71d8-5bba-44f6-a746-7720e7dce307",
-      "call_status": "calling"
+      "call_status": "connected",
+      "interaction_id": "20261029/1be2283a-17:09:25-bff0d9e3",
+      "duration": 42.45097351074219,
+      "failure_reason": "NO_FAILURE_REASON",
+      "transcript": [
+        {
+          "role": "agent",
+          "en_text": "नमस्ते! मैं इवेंट ऑर्गेनाइजर की तरफ से आपको कॉल कर रहा हूँ ताकि शनिवार के इवेंट के लिए आपकी मौजूदगी पक्की कर सकूँ। क्या आप आएँगे?"
+        },
+        {
+          "role": "user",
+          "en_text": "यस।"
+        },
+        {
+          "role": "agent",
+          "en_text": "अरे वाह, सुनकर अच्छा लगा! वैसे, क्या आप अपने साथ कुछ और guests को भी ला रहे हैं?"
+        },
+        {
+          "role": "user",
+          "en_text": "दो लोग आ रहे हैं।"
+        },
+        {
+          "role": "agent",
+          "en_text": "ठीक है। क्या आप मुझे उन दोनों guests के नाम बता सकते हैं? एक-एक करके बताइए।"
+        },
+        {
+          "role": "user",
+          "en_text": "एक तो मेरा किशोर और एक तो रामजी।"
+        },
+        {
+          "role": "agent",
+          "en_text": "अच्छा, तो आप अपने साथ किशोर और रामजी को ला रहे हैं। मतलब आप कुल तीन लोग होंगे। क्या यह सारी details सही हैं?"
+        },
+        {
+          "role": "user",
+          "en_text": "सही है।"
+        },
+        {
+          "role": "agent",
+          "en_text": "बहुत बढ़िया! आपकी attendance confirm हो गई है। शनिवार को मिलते हैं, आपका दिन शुभ हो!"
+        }
+      ],
+      "sarvam_variables": {
+        "user_name": "Manan",
+        "call_summary": "The agent confirmed the user's attendance for Saturday's event and registered two additional guests, Kishore and Ramji."
+      },
+      "result_status": "RSVP not received — awaiting extraction",
+      "processed_attempt_id": "118d71d8-5bba-44f6-a746-7720e7dce307",
+      "call_ended_at": "2026-10-29T11:40:08",
+      "reconciled_from": "sarvam_analytics"
     }
   ],
   "tests": [
