@@ -42,19 +42,21 @@
       <div class="build-grid">
         <div>
           <div class="section-title"><div><small>AGENT</small><h2>RSVP agent</h2></div><span class="ready">● Ready</span></div>
+          <label for="greetingBox">Greeting (first sentence on the call)</label>
+          <textarea id="greetingBox" class="instruction" rows="3" placeholder="Leave empty for the default. Use {name} {event} {date} {time} {venue} {event_details}. Example: Hello! I'm an AI assistant calling about our upcoming event. The event is on {date} at {time} at {venue}. Am I speaking with {name}?">{{ state.agent.greeting or '' }}</textarea>
           <label>Instructions</label>
           <textarea id="instructionBox" class="instruction" rows="8">{{ state.agent.prompt }}</textarea>
           <div class="voice-options" style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:14px 0;display:grid;gap:10px">
             <strong>Voice preferences</strong>
-            <label for="voiceLanguage">Language (empty = keep existing behavior)</label>
+            <label for="voiceLanguage">Language (empty = English)</label>
             <select id="voiceLanguage" style="padding:9px;border-radius:8px;border:1px solid #ddd">
-              <option value="">No selection (default)</option><option value="en-IN">English</option><option value="ta-IN">Tamil</option><option value="hi-IN">Hindi</option><option value="te-IN">Telugu</option><option value="ml-IN">Malayalam</option><option value="kn-IN">Kannada</option>
+              <option value="">No selection (default)</option><option value="en-IN">English</option><option value="ta-IN">Tamil</option><option value="hi-IN">Hindi</option><option value="te-IN">Telugu</option><option value="ml-IN">Malayalam</option><option value="kn-IN">Kannada</option><option value="mr-IN">Marathi</option><option value="bn-IN">Bengali</option><option value="gu-IN">Gujarati</option><option value="pa-IN">Punjabi</option><option value="od-IN">Odia</option>
             </select>
             <label for="voiceTone">Tone</label>
             <select id="voiceTone" style="padding:9px;border-radius:8px;border:1px solid #ddd"><option value="normal">Normal</option><option value="friendly">Friendly</option><option value="professional">Professional</option><option value="calm">Calm</option></select>
             <label for="voiceSpeed">Speaking speed: <b id="voiceSpeedLabel">1.0×</b></label>
             <input id="voiceSpeed" type="range" min="0.7" max="1.5" step="0.1" value="1.0" />
-            <small>Browser demo applies speed/voice settings. Real Sarvam agent speed and greeting require supported Sarvam configuration.</small>
+            <small>Real calls: greeting, instructions, language, tone and speed are sent to the phone agent on every call. <a href="#" id="previewCall">Preview what the phone agent will receive</a></small><pre id="callPreview" style="white-space:pre-wrap;font-size:12px;background:#f7f7f8;border-radius:8px;padding:8px;display:none"></pre>
           </div>
           <div class="setup-row"><span>Voice</span><b>Shreya</b></div>
           <button id="saveInstructions" class="black">Save changes</button>

@@ -163,13 +163,28 @@ def get_sarvam_error(response):
     return str(error)[:500]
 
 
-def start_sarvam_outbound(phone: str, contact_name: str):
+SARVAM_LANGUAGES = {
+    "bengali", "gujarati", "kannada", "malayalam", "tamil", "telugu", "punjabi",
+    "sanskrit", "odia", "marathi", "hindi", "english", "assamese",
+}
+# Default call language. Without this Sarvam uses the agent's own default
+# (Hindi "Namaste, I am Shubh...") which is what you heard in the recording.
+SARVAM_INITIAL_LANGUAGE = setting("SARVAM_INITIAL_LANGUAGE", "English")
+# Set SARVAM_USE_INITIAL_BOT_MESSAGE=false to keep the greeting configured in the dashboard.
+SARVAM_USE_INITIAL_BOT_MESSAGE = setting("SARVAM_USE_INITIAL_BOT_MESSAGE", "true").lower() not in {"0", "false", "no"}
+
+
+def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = None):
     """
     Launch a call using the exact committed Sarvam
     agent identified by SARVAM_APP_ID and VERSION.
 
-    Note: Greeting and Instructions must be edited
-    inside this agent on the Sarvam platform.
+    `context` (from build_real_call_context) is sent per call as:
+      - app_config.agent_variables  -> input variables usable as @contact_name,
+        @event_details, @call_instructions ... in the agent prompt
+      - app_config.app_overrides.initial_bot_message -> the first sentence the
+        agent speaks (replaces the dashboard greeting for THIS call only)
+      - app_config.app_overrides.initial_language_name -> call language
     """
     validate_config()
 
@@ -192,15 +207,42 @@ def start_sarvam_outbound(phone: str, contact_name: str):
             "?token=" + quote(SARVAM_WEBHOOK_TOKEN, safe="")
         )
 
-    payload = {
-        "app_config": {
-            "app_id": SARVAM_APP_ID,
-            "app_version": int(SARVAM_APP_VERSION),
-            "connection_config": {
-                "connection_id": SARVAM_CONNECTION_ID,
-                "agent_phone_number": agent_phone,
-            },
+    app_config = {
+        "app_id": SARVAM_APP_ID,
+        "app_version": int(SARVAM_APP_VERSION),
+        "connection_config": {
+            "connection_id": SARVAM_CONNECTION_ID,
+            "agent_phone_number": agent_phone,
         },
+    }
+    context = context or {}
+    allowed_vars = {
+        v.strip() for v in setting(
+            "SARVAM_AGENT_VARIABLES", "call_instructions,opening_message"
+        ).split(",") if v.strip()
+    }
+    agent_variables = {
+        k: str(v) for k, v in context.items()
+        if k in allowed_vars and v not in (None, "")
+    }
+    if agent_variables:
+        app_config["agent_variables"] = agent_variables
+    overrides = {}
+    if SARVAM_USE_INITIAL_BOT_MESSAGE and context.get("opening_message"):
+        overrides["initial_bot_message"] = str(context["opening_message"])
+    locale_map = {"en-in": "English", "ta-in": "Tamil", "hi-in": "Hindi",
+                  "te-in": "Telugu", "ml-in": "Malayalam", "kn-in": "Kannada",
+                  "mr-in": "Marathi", "bn-in": "Bengali", "gu-in": "Gujarati",
+                  "pa-in": "Punjabi", "od-in": "Odia"}
+    raw_lang = str(context.get("language") or "").strip()
+    language = locale_map.get(raw_lang.lower()) or raw_lang.title() or SARVAM_INITIAL_LANGUAGE.strip().title()
+    if language.lower() in SARVAM_LANGUAGES:
+        overrides["initial_language_name"] = language
+    if overrides:
+        app_config["app_overrides"] = overrides
+
+    payload = {
+        "app_config": app_config,
         "user_config": {
             "user_phone_number": user_phone,
         },
@@ -224,21 +266,48 @@ def start_sarvam_outbound(phone: str, contact_name: str):
         contact_name,
     )
 
-    try:
-        response = requests.post(
-            url,
-            headers={
-                "X-API-Key": SARVAM_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            "Sarvam network error: "
-            + type(exc).__name__
-        ) from exc
+    def _post():
+        try:
+            return requests.post(
+                url,
+                headers={
+                    "X-API-Key": SARVAM_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "Sarvam network error: "
+                + type(exc).__name__
+            ) from exc
+
+    response = _post()
+    dropped = []
+
+    # Sarvam answers 422 "Agent variables '{...}' not found in agent variables of app"
+    # when a variable was not created in the agent. Drop exactly those and retry once,
+    # so the call still goes out (greeting + language overrides still apply).
+    if response.status_code == 422 and app_config.get("agent_variables"):
+        message = get_sarvam_error(response)
+        match = re.search(r"not found in agent variables", message)
+        if match:
+            dropped = [
+                n for n in re.findall(r"'(\w+)'", message.split("not found")[0])
+                if n in app_config["agent_variables"]
+            ]
+            if dropped:
+                for name in dropped:
+                    app_config["agent_variables"].pop(name, None)
+                if not app_config["agent_variables"]:
+                    app_config.pop("agent_variables")
+                logger.warning(
+                    "Sarvam agent is missing variables %s - retrying without them. "
+                    "Create them in the Sarvam agent so the script is delivered.",
+                    dropped,
+                )
+                response = _post()
 
     if not response.ok:
         raise RuntimeError(
@@ -274,5 +343,6 @@ def start_sarvam_outbound(phone: str, contact_name: str):
     return {
         "attempt_id": attempt_id,
         "status": "calling",
+        "dropped_variables": dropped,
         "raw": data,
     }

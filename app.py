@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pypdf import PdfReader
+from rsvp_parser import extract_rsvp_from_transcript
 from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outbound
 
 load_dotenv()
@@ -36,10 +37,24 @@ STATE_LOCK = threading.RLock()
 CALL_LAUNCH_LOCK = threading.Lock()
 WEBHOOK_TOKEN = os.getenv("SARVAM_WEBHOOK_TOKEN", "").strip()
 
+DEFAULT_PROMPT = (
+    "Event name: Community Event\n"
+    "Event date: Saturday\n"
+    "Event time: 6:30 PM\n"
+    "Event venue: Community Hall\n\n"
+    "You are an RSVP calling assistant. Ask ONE short question at a time and wait for the answer.\n"
+    "1. Confirm you are speaking with the invitee. If it is the wrong person, apologise and end the call.\n"
+    "2. Say thank you using their name, then ask: Will you be attending the event?\n"
+    "3. If No: thank them politely and end the call. If Yes: ask: How many additional guests will you bring?\n"
+    "4. If more than zero: ask: Could you tell me their names? Collect every guest name. Never invent names.\n"
+    "5. Close with one sentence, e.g. Thank you. I've noted your RSVP along with both guest names. Then end the call."
+)
+
 DEFAULT_STATE = {
     "agent": {
         "name": "RSVP agent",
-        "prompt": "Call Saturday's registrants, confirm if they're coming, note whether they're bringing guests and collect every guest name.",
+        "prompt": DEFAULT_PROMPT,
+        "greeting": "",
         "language": "English",
         "voice": "Shreya",
         "voice_language": "",
@@ -325,6 +340,25 @@ def extract_sarvam_rsvp(final_vars):
     return rsvp, guests
 
 
+def apply_transcript_rsvp(contact):
+    """Fill RSVP/guests from the call transcript when Sarvam sent no output variables.
+
+    Returns True when the contact was updated. Never overrides an RSVP that already came
+    from Sarvam's output variables.
+    """
+    if contact.get("rsvp") or not contact.get("transcript"):
+        return False
+    found = extract_rsvp_from_transcript(contact["transcript"])
+    if not found["rsvp"]:
+        return False
+    contact["rsvp"] = found["rsvp"]
+    contact["guests"] = ", ".join(found["guests"]) if found["rsvp"] == "Yes" else ""
+    contact["status"] = "Completed"
+    contact["result_status"] = "RSVP read from transcript" + ("" if found["confident"] else " (please verify)")
+    contact["rsvp_source"] = "transcript"
+    return True
+
+
 def merge_call_result(contact, variables):
     previous = contact.get("sarvam_variables")
     merged = dict(previous) if isinstance(previous, dict) else {}
@@ -343,8 +377,9 @@ def merge_call_result(contact, variables):
         contact["status"] = "Completed"
         contact["result_status"] = "RSVP received"
     elif not contact.get("rsvp"):
-        contact["status"] = "Call ended"
-        contact["result_status"] = "RSVP not received — awaiting extraction"
+        if not apply_transcript_rsvp(contact):
+            contact["status"] = "Call ended"
+            contact["result_status"] = "RSVP not received — awaiting extraction"
 
 
 def start_real_contact_call(contact):
@@ -354,11 +389,11 @@ def start_real_contact_call(contact):
         real_contact = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
         if not real_contact or real_contact.get("status") not in {"Ready", "Queued"}:
             return None
-        build_real_call_context(state, real_contact)
+        call_context = build_real_call_context(state, real_contact)
         real_contact["status"] = "Starting"
         save_state(state)
         try:
-            result = start_sarvam_outbound(real_contact["phone"], real_contact["name"])
+            result = start_sarvam_outbound(real_contact["phone"], real_contact["name"], call_context)
         except Exception as exc:
             state = load_state()
             current = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
@@ -374,6 +409,12 @@ def start_real_contact_call(contact):
             current["attempt_id"] = result["attempt_id"]
             current["status"] = "Calling"
             current["call_status"] = result.get("status", "calling")
+            if result.get("dropped_variables"):
+                current["launch_warning"] = (
+                    "Sarvam agent is missing variables: "
+                    + ", ".join(result["dropped_variables"])
+                    + ". Create them in the Sarvam agent."
+                )
             save_state(state)
         return result
 
@@ -420,9 +461,11 @@ async def build(request: Request):
     # Additive voice preferences; omitted fields leave the current settings unchanged.
     if "voice_language" in data:
         value = str(data["voice_language"] or "")
-        if value not in {"", "en-IN", "ta-IN", "hi-IN", "te-IN", "ml-IN", "kn-IN"}:
+        if value not in {"", "en-IN", "ta-IN", "hi-IN", "te-IN", "ml-IN", "kn-IN", "mr-IN", "bn-IN", "gu-IN", "pa-IN", "od-IN"}:
             raise HTTPException(status_code=400, detail="Unsupported voice language")
         agent["voice_language"] = value
+    if "greeting" in data:
+        agent["greeting"] = str(data["greeting"] or "").strip()[:600]
     if "voice_tone" in data:
         value = str(data["voice_tone"] or "normal")
         if value not in {"normal", "friendly", "professional", "calm"}:
@@ -500,43 +543,108 @@ def _contact_context_data(request: Request, phone: str):
     return build_real_call_context(current, contact)
 
 
+def _spoken_event_sentence(state):
+    """Natural spoken sentence, e.g. 'The event is on Saturday at 6:30 PM at Community Hall.'"""
+    label, facts = intro_event_details(state)
+    data = {}
+    for f in facts:
+        key, _, val = f.partition(":")
+        data[key.strip().lower()] = val.strip()
+    name = data.get("event") or ""
+    when = data.get("date", "")
+    time = data.get("time", "")
+    venue = data.get("venue") or data.get("location", "")
+    subject = f"our upcoming event, {name}" if name else "our upcoming event"
+    parts = []
+    if when:
+        parts.append(f"on {when}")
+    if time:
+        parts.append(f"at {time}")
+    if venue:
+        parts.append(f"at {venue}")
+    sentence = f"The event is {' '.join(parts)}." if parts else ""
+    return subject, sentence, (name or label)
+
+
+TONE_STYLE = {
+    "normal": "Use a natural, neutral tone.",
+    "friendly": "Use a warm, friendly and cheerful tone.",
+    "professional": "Use a polite, professional and concise tone.",
+    "calm": "Use a calm, soft and reassuring tone.",
+}
+
+
+def _speed_style(speed):
+    try:
+        speed = float(speed)
+    except (TypeError, ValueError):
+        speed = 1.0
+    if speed <= 0.85:
+        return "Speak slowly and clearly, using very short sentences."
+    if speed >= 1.2:
+        return "Speak briskly and keep every reply very short."
+    return ""
+
+
+def render_greeting(template, name, subject, event_sentence, event_name, facts):
+    """Fill {name} {event} {event_details} {date} {time} {venue} in the dashboard greeting."""
+    data = {}
+    for f in facts:
+        k, _, v = f.partition(":")
+        data[k.strip().lower()] = v.strip()
+    values = {
+        "name": name,
+        "event": event_name,
+        "event_details": event_sentence,
+        "date": data.get("date", ""),
+        "time": data.get("time", ""),
+        "venue": data.get("venue") or data.get("location", ""),
+    }
+    text = re.sub(r"\{(\w+)\}", lambda m: values.get(m.group(1), m.group(0)), template)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def build_real_call_context(state, contact):
-    """Generate the greeting and identity gate from this CSV row only."""
+    """Everything the phone agent needs, built from the DASHBOARD settings and this CSV row only."""
     name = str(contact.get("name", "")).strip()
     if not name:
         raise ValueError("Upload a CSV contact with a nonempty name before calling")
-    label, facts = intro_event_details(state)
-    event_name = next((f.split(":", 1)[1].strip() for f in facts if f.startswith("Event:")), label)
-    details = ". ".join(f for f in facts if not f.startswith("Event:"))
-    opening = (
-        "Hello, I'm an AI assistant calling on behalf of the event organiser. "
-        f"We would like to invite you to {event_name}. "
-        + (details + ". " if details else "")
-        + f"Am I speaking with {name}?"
+    agent = state.get("agent", {})
+    subject, event_sentence, event_name = _spoken_event_sentence(state)
+    _, facts = intro_event_details(state)
+    template = str(agent.get("greeting", "")).strip() or (
+        "Hello! I'm an AI assistant calling about {event_intro}. {event_details} Am I speaking with {name}?"
     )
-    instructions = str(state.get("agent", {}).get("prompt", "")).strip()
-    flow = (
-        "REQUIRED CALL ORDER: Start by speaking this exact opening and nothing after it: "
-        + opening + "\nWAIT for an answer. The only expected invitee is " + name + ". "
-        "Never read a list of CSV names. Never ask attendance before identity confirmation. "
-        "Yes here confirms identity ONLY, not RSVP. If wrong person, apologise and end; "
-        "do not ask this person for attendance or guests. If identity is unclear, ask again. "
-        "After identity is confirmed ask: Will you be attending " + event_name + "? "
-        "WAIT. If attending ask additional guest count excluding the invitee, then collect "
-        "ALL guest names. For zero guests do not ask names. If declining record No and "
-        "no guests. If unsure record Maybe. Read back the RSVP and all supplied names, "
-        "ask for corrections, then thank them and end. Never invent event details or names. "
-        "Never treat call connected or identity confirmed as an attendance answer. "
-        "If this flow conflicts with other instructions, follow this required call order."
+    template = template.replace("{event_intro}", subject)
+    opening = render_greeting(template, name, subject, event_sentence, event_name, facts)
+    instructions = str(agent.get("prompt", "")).strip()
+    style = " ".join(x for x in (
+        TONE_STYLE.get(agent.get("voice_tone", "normal"), ""),
+        _speed_style(agent.get("voice_speed", 1.0)),
+    ) if x)
+    rules = (
+        f"You are calling {name}. The opening line has ALREADY been spoken; never repeat it or "
+        "introduce yourself again. Ask one question at a time and wait. A Yes to the identity "
+        "question is NOT an attendance answer. Never invent names, dates, times or venues. "
+        "Never mention other contacts."
     )
     return {
         "contact_name": name,
         "event_label": event_name,
-        "event_details": details,
+        "event_details": event_sentence,
         "identity_question": f"Am I speaking with {name}?",
         "opening_message": opening,
-        "call_instructions": instructions + "\n\n" + flow,
+        "call_instructions": "\n\n".join(x for x in (instructions, style, rules) if x),
+        "language": str(agent.get("voice_language", "") or ""),
     }
+
+
+@app.get("/api/call-preview")
+async def call_preview(name: str = "Raja"):
+    """Dashboard preview of exactly what is sent to Sarvam for a call."""
+    ctx = build_real_call_context(load_state(), {"name": name or "Raja"})
+    return {"opening_message": ctx["opening_message"], "call_instructions": ctx["call_instructions"],
+            "language": ctx["language"] or os.getenv("SARVAM_INITIAL_LANGUAGE", "English")}
 
 
 @app.get("/api/sarvam/contact-context")
@@ -820,6 +928,7 @@ def call_entry(contact):
         "duration": contact.get("duration"),
         "has_transcript": bool(transcript),
         "has_recording": bool(contact.get("interaction_id")),
+        "has_interaction": bool(contact.get("interaction_id")),
     }
 
 
@@ -834,13 +943,14 @@ async def list_calls(request: Request):
 @app.get("/api/calls/{attempt_id}/transcript")
 async def call_transcript(attempt_id: str, request: Request):
     require_recordings_auth(request)
-    with STATE_LOCK:
-        state = load_state()
-        contact = find_contact_by_attempt_id(state, attempt_id)
-        if not contact:
-            raise HTTPException(status_code=404, detail="Call not found")
-        transcript = contact.get("transcript") or []
-    return {"call": call_entry(contact), "transcript": transcript}
+    state = load_state()
+    if not find_contact_by_attempt_id(state, attempt_id):
+        raise HTTPException(status_code=404, detail="Call not found")
+    # Stored webhook transcript first; otherwise fetch it from Sarvam Analytics now.
+    transcript, error = await asyncio.to_thread(ensure_transcript, attempt_id)
+    contact = find_contact_by_attempt_id(load_state(), attempt_id)
+    return {"call": call_entry(contact), "transcript": transcript, "note": error,
+            "rsvp": contact.get("rsvp", ""), "guests": contact.get("guests", "")}
 
 
 @app.get("/api/calls/{attempt_id}/recording")
@@ -1088,6 +1198,8 @@ async def sarvam_webhook(request: Request):
                 print("User webhook failed:", type(exc).__name__, flush=True)
         asyncio.create_task(send_optional_callback())
 
+    if status == "connected" and not payload.get("interaction_transcript"):
+        asyncio.create_task(fetch_transcript_with_retries(attempt_id))
     asyncio.create_task(start_next_real_call_after_delay()) if not already_processed else None
     return {"ok": True, "attempt_id": attempt_id, "status": status}
 
@@ -1133,13 +1245,20 @@ def _sarvam_attempt_from_analytics(attempt_id: str):
     return None
 
 
-def _sarvam_transcript(interaction_id: str):
+def fetch_transcript(interaction_id: str):
+    """Fetch a call transcript straight from Sarvam Analytics.
+
+    Returns (rows, error). rows use the same shape as the webhook transcript
+    ({"role": "agent"|"user", "en_text": ...}). Sarvam returns 200 with an empty
+    message list while the transcript is still being processed.
+    """
     from sarvam_voice import (
         SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID,
         SARVAM_WORKSPACE_ID, SARVAM_APP_ID,
     )
-    if not interaction_id or "/" not in interaction_id:
-        return []
+    interaction_id = str(interaction_id or "").strip()
+    if not interaction_id:
+        return [], "This call has no interaction ID (it did not connect, or Sarvam has not reported it yet)."
     url = (
         f"{SARVAM_API_BASE}/api/analytics/v1/"
         f"{quote(SARVAM_ORG_ID, safe='')}/"
@@ -1148,19 +1267,67 @@ def _sarvam_transcript(interaction_id: str):
         f"{quote(interaction_id, safe='')}"
     )
     try:
-        res = requests.get(url, headers={"X-API-Key": SARVAM_API_KEY}, timeout=15)
-        if not res.ok:
-            return []
-        return [
-            {
-                "role": "agent" if m.get("role") in {"assistant", "agent", "bot"} else "user",
-                "en_text": m.get("content") or m.get("en_text") or "",
-            }
-            for m in res.json().get("messages", [])
-            if isinstance(m, dict)
-        ]
-    except (requests.RequestException, ValueError, TypeError):
-        return []
+        res = requests.get(url, headers={"X-API-Key": SARVAM_API_KEY}, timeout=20)
+    except requests.RequestException as exc:
+        return [], f"Could not reach Sarvam ({type(exc).__name__})."
+    if not res.ok:
+        print("SARVAM TRANSCRIPT HTTP", res.status_code, flush=True)
+        return [], f"Sarvam transcript API returned HTTP {res.status_code}."
+    try:
+        messages = res.json().get("messages", [])
+    except (ValueError, AttributeError):
+        return [], "Sarvam returned an unreadable transcript."
+    rows = [
+        {
+            "role": "agent" if m.get("role") in {"assistant", "agent", "bot"} else "user",
+            "en_text": m.get("content") or m.get("en_text") or "",
+            "language": m.get("language_name", ""),
+        }
+        for m in messages if isinstance(m, dict)
+    ]
+    if not rows:
+        return [], "Sarvam has no transcript for this call yet. Try again in a minute."
+    return rows, ""
+
+
+def _sarvam_transcript(interaction_id: str):
+    return fetch_transcript(interaction_id)[0]
+
+
+def ensure_transcript(attempt_id: str):
+    """Make sure the contact has a stored transcript (fetch from Sarvam if missing) and,
+    when Sarvam sent no output variables, read RSVP + guests from that transcript."""
+    state = load_state()
+    contact = find_contact_by_attempt_id(state, attempt_id)
+    if not contact:
+        return [], "Call not found"
+    rows, error = contact.get("transcript") or [], ""
+    if not rows:
+        rows, error = fetch_transcript(contact.get("interaction_id"))
+    if rows:
+        with STATE_LOCK:
+            state = load_state()
+            contact = find_contact_by_attempt_id(state, attempt_id)
+            if contact:
+                contact["transcript"] = rows
+                if contact.get("status") in {"Call ended", "Calling"} or not contact.get("rsvp"):
+                    apply_transcript_rsvp(contact)
+                save_state(state)
+    return rows, error
+
+
+async def fetch_transcript_with_retries(attempt_id: str, delays=(3, 15, 45, 120)):
+    """Sarvam can take a little while to publish a transcript after the call ends."""
+    for delay in delays:
+        await asyncio.sleep(delay)
+        try:
+            rows, _ = await asyncio.to_thread(ensure_transcript, attempt_id)
+        except Exception as exc:
+            print("TRANSCRIPT FETCH FAILED:", type(exc).__name__, flush=True)
+            continue
+        if rows:
+            print("SARVAM TRANSCRIPT SAVED:", attempt_id, flush=True)
+            return
 
 
 def reconcile_one_call(attempt_id: str):
@@ -1219,6 +1386,14 @@ def reconcile_pending_calls():
     ids = [str(c.get("attempt_id")) for c in state.get("contacts", [])
            if c.get("status") in {"Calling", "Call ended"} and c.get("attempt_id")]
     outcomes = []
+    # Also backfill transcripts for finished calls that have an interaction ID but no text.
+    for c in state.get("contacts", []):
+        if c.get("attempt_id") and c.get("interaction_id") and not c.get("rsvp") \
+                and c.get("status") not in {"Calling", "Starting"}:
+            try:
+                ensure_transcript(str(c["attempt_id"]))
+            except Exception as exc:
+                print("TRANSCRIPT BACKFILL FAILED:", type(exc).__name__, flush=True)
     for attempt_id in ids[:5]:
         try:
             outcomes.append(reconcile_one_call(attempt_id))

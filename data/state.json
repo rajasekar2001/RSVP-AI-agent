@@ -8,7 +8,8 @@
     "fixed_plus_ones": true,
     "voice_language": "en-IN",
     "voice_tone": "normal",
-    "voice_speed": 1.5
+    "voice_speed": 1.5,
+    "greeting": "Hello! I'm an AI assistant calling about our upcoming event. The event is on {date} at {time} at {venue}. Am I speaking with {name}?"
   },
   "knowledge": [],
   "webhook": {
@@ -19,59 +20,80 @@
     {
       "name": "Raja",
       "phone": "+918903632050",
-      "status": "Call ended",
-      "rsvp": "",
-      "guests": "",
-      "attempt_id": "118d71d8-5bba-44f6-a746-7720e7dce307",
+      "status": "Completed",
+      "rsvp": "Yes",
+      "guests": "Manoj, Vinod",
+      "attempt_id": "b5d1bfe7-5217-433e-90d4-1ad8f51635c9",
       "call_status": "connected",
-      "interaction_id": "20261029/1be2283a-17:09:25-bff0d9e3",
-      "duration": 42.45097351074219,
+      "launch_warning": "Sarvam agent is missing variables: call_instructions, opening_message. Create them in the Sarvam agent.",
+      "interaction_id": "20261103/1be2283a-17:43:24-e5873069",
+      "duration": 37.0769157409668,
       "failure_reason": "NO_FAILURE_REASON",
       "transcript": [
         {
           "role": "agent",
-          "en_text": "नमस्ते! मैं इवेंट ऑर्गेनाइजर की तरफ से आपको कॉल कर रहा हूँ ताकि शनिवार के इवेंट के लिए आपकी मौजूदगी पक्की कर सकूँ। क्या आप आएँगे?"
+          "en_text": "Hello! I'm an AI assistant calling on behalf of the event organiser to confirm your attendance for Saturday's event. Will you be attending?",
+          "language": "English"
         },
         {
           "role": "user",
-          "en_text": "यस।"
+          "en_text": "Yes.",
+          "language": "UNKNOWN"
         },
         {
           "role": "agent",
-          "en_text": "अरे वाह, सुनकर अच्छा लगा! वैसे, क्या आप अपने साथ कुछ और guests को भी ला रहे हैं?"
+          "en_text": "That's great! Will you be bringing any additional guests with you?",
+          "language": "English"
         },
         {
           "role": "user",
-          "en_text": "दो लोग आ रहे हैं।"
+          "en_text": "Two guests.",
+          "language": "UNKNOWN"
         },
         {
           "role": "agent",
-          "en_text": "ठीक है। क्या आप मुझे उन दोनों guests के नाम बता सकते हैं? एक-एक करके बताइए।"
+          "en_text": "Got it. Could you please tell me the name of the first guest?",
+          "language": "English"
         },
         {
           "role": "user",
-          "en_text": "एक तो मेरा किशोर और एक तो रामजी।"
+          "en_text": "Manoj.",
+          "language": "UNKNOWN"
         },
         {
           "role": "agent",
-          "en_text": "अच्छा, तो आप अपने साथ किशोर और रामजी को ला रहे हैं। मतलब आप कुल तीन लोग होंगे। क्या यह सारी details सही हैं?"
+          "en_text": "Thanks. And what is the name of the second guest?",
+          "language": "English"
         },
         {
           "role": "user",
-          "en_text": "सही है।"
+          "en_text": "Vinod.",
+          "language": "UNKNOWN"
         },
         {
           "role": "agent",
-          "en_text": "बहुत बढ़िया! आपकी attendance confirm हो गई है। शनिवार को मिलते हैं, आपका दिन शुभ हो!"
+          "en_text": "Alright, so you are attending with two guests, Manoj and Vinod. Does that sound correct?",
+          "language": "English"
+        },
+        {
+          "role": "user",
+          "en_text": "Yes, yes.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "Perfect. Thank you for confirming! We look forward to seeing you all on Saturday. Have a great day!",
+          "language": "English"
         }
       ],
       "sarvam_variables": {
         "user_name": "Manan",
-        "call_summary": "The agent confirmed the user's attendance for Saturday's event and registered two additional guests, Kishore and Ramji."
+        "call_summary": "The AI assistant successfully confirmed the user's attendance for Saturday's event and registered two guests, Manoj and Vinod."
       },
-      "result_status": "RSVP not received — awaiting extraction",
-      "processed_attempt_id": "118d71d8-5bba-44f6-a746-7720e7dce307",
-      "call_ended_at": "2026-10-29T11:40:08",
+      "result_status": "RSVP read from transcript",
+      "rsvp_source": "transcript",
+      "processed_attempt_id": "b5d1bfe7-5217-433e-90d4-1ad8f51635c9",
+      "call_ended_at": "2026-11-03T12:14:01",
       "reconciled_from": "sarvam_analytics"
     }
   ],

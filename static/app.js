@@ -83,13 +83,15 @@ function voicePrefs() {
     return {
         voice_language: $("#voiceLanguage")?.value || "",
         voice_tone: $("#voiceTone")?.value || "normal",
-        voice_speed: Number($("#voiceSpeed")?.value || 1)
+        voice_speed: Number($("#voiceSpeed")?.value || 1),
+        greeting: $("#greetingBox") ? $("#greetingBox").value : undefined
     };
 }
 
 function syncVoicePrefs() {
     if ($("#voiceLanguage")) $("#voiceLanguage").value = state.agent?.voice_language || "";
     if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
+    if ($("#greetingBox")) $("#greetingBox").value = state.agent?.greeting || "";
     if ($("#voiceSpeed")) $("#voiceSpeed").value = state.agent?.voice_speed ?? 1;
     if ($("#voiceSpeedLabel")) $("#voiceSpeedLabel").textContent = `${Number($("#voiceSpeed")?.value || 1).toFixed(1)}×`;
 }
@@ -1035,7 +1037,8 @@ async function refreshCallHistory() {
                 : "Check transcript availability";
 
             transcript.onclick = () => {
-                if (!call.has_transcript) {
+                // A connected call can always be fetched from Sarvam on demand.
+                if (!call.has_transcript && !call.has_interaction) {
                     const message =
                         String(call.status || "").toLowerCase() === "calling"
                             ? "Call still marked Calling. Waiting for the completion webhook and transcript."
@@ -1092,10 +1095,12 @@ async function showCallTranscript(attemptId) {
     node.textContent = "Loading transcript…";
     try {
         const data = await recordingsRequest(`/api/calls/${encodeURIComponent(attemptId)}/transcript`);
-        const rows = data.transcript;
+        const rows = data.transcript || [];
         node.textContent = rows.length
             ? rows.map(item => `${item.role === "agent" ? "AI" : "Guest"}: ${item.indic_text || item.en_text || item.text || ""}`).join("\n\n")
-            : "Transcript not available for this call.";
+            : (data.note || "Transcript not available for this call.");
+        // The server may have just read RSVP + guests from this transcript: refresh the table.
+        if (data.rsvp) { try { await refreshState(); } catch (_) {} }
     } catch (err) { node.textContent = `Transcript error: ${err.message}`; }
 }
 
@@ -1145,4 +1150,15 @@ document.querySelector("#syncSarvamCalls")?.addEventListener("click", async () =
         await refreshState();
         await refreshCallHistory();
     } catch (error) { toast(`Sync failed: ${error.message}`, 6500); }
+});
+
+
+$("#previewCall")?.addEventListener("click", async e => {
+    e.preventDefault();
+    try {
+        const d = await api("/api/call-preview?name=Raja");
+        const box = $("#callPreview");
+        box.style.display = "block";
+        box.textContent = `Language: ${d.language}\n\nGREETING:\n${d.opening_message}\n\nINSTRUCTIONS:\n${d.call_instructions}`;
+    } catch (err) { toast(err.message, 5000); }
 });
