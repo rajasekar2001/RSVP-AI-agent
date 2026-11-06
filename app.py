@@ -8,7 +8,7 @@ import re
 import secrets
 import threading
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from openpyxl import load_workbook
@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pypdf import PdfReader
 from rsvp_parser import extract_rsvp_from_transcript
+import call_features as cf
 from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outbound
 
 load_dotenv()
@@ -55,6 +56,10 @@ DEFAULT_STATE = {
         "name": "RSVP agent",
         "prompt": DEFAULT_PROMPT,
         "greeting": "",
+        "max_call_seconds": cf.DEFAULT_MAX_CALL_SECONDS,
+        **cf.RETRY_DEFAULTS,
+        "inbound_greeting": "",
+        "inbound_prompt": cf.DEFAULT_INBOUND_PROMPT,
         "language": "English",
         "voice": "Shreya",
         "voice_language": "",
@@ -64,6 +69,8 @@ DEFAULT_STATE = {
         "fixed_plus_ones": True,
     },
     "knowledge": [],
+    "inbound_calls": [],
+    "campaign_started": False,
     "webhook": {"url": "", "enabled": False},
     "contacts": [],
     "tests": [
@@ -80,6 +87,9 @@ def public_state():
     for c in data.get("contacts", []):
         for secret in ("transcript", "sarvam_variables", "recording_url"):
             c.pop(secret, None)
+    for call in data.get("inbound_calls", []):
+        for secret in ("transcript", "sarvam_variables"):
+            call.pop(secret, None)
     return data
 
 
@@ -87,7 +97,12 @@ def load_state():
     with STATE_LOCK:
         if not STATE_FILE.exists():
             save_state(deepcopy(DEFAULT_STATE))
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        agent = state.get("agent", {})
+        # Older saves hold the previous default incoming-call script: upgrade it to the current one.
+        if agent.get("inbound_prompt") in cf.LEGACY_INBOUND_PROMPTS:
+            agent["inbound_prompt"] = cf.DEFAULT_INBOUND_PROMPT
+        return state
 
 
 def save_state(state):
@@ -389,8 +404,12 @@ def start_real_contact_call(contact):
         real_contact = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
         if not real_contact or real_contact.get("status") not in {"Ready", "Queued"}:
             return None
-        call_context = build_real_call_context(state, real_contact)
+        attempt = int(real_contact.get("attempts") or 0) + 1
+        call_context = build_real_call_context(state, real_contact, attempt)
         real_contact["status"] = "Starting"
+        real_contact["attempts"] = attempt
+        real_contact.pop("next_retry_at", None)
+        real_contact.pop("retry_note", None)
         save_state(state)
         try:
             result = start_sarvam_outbound(real_contact["phone"], real_contact["name"], call_context)
@@ -401,6 +420,7 @@ def start_real_contact_call(contact):
                 current["status"] = "Failed"
                 current["call_status"] = "launch_failed"
                 current["failure_reason"] = str(exc)[:400]
+                current.pop("next_retry_at", None)  # our own launch error: never auto-redial on it
                 save_state(state)
             raise
         state = load_state()
@@ -417,6 +437,57 @@ def start_real_contact_call(contact):
                 )
             save_state(state)
         return result
+
+
+def schedule_retry(contact, state):
+    """After a finished call that was NOT answered, plan the next attempt (default: 1 hour later)."""
+    settings = cf.retry_settings(state.get("agent"))
+    contact.pop("next_retry_at", None)
+    if contact.get("status") not in cf.RETRYABLE_STATUSES or contact.get("rsvp"):
+        return
+    attempts = int(contact.get("attempts") or 1)
+    if cf.should_retry(contact, settings):
+        due = datetime.now() + timedelta(minutes=settings["retry_interval_minutes"])
+        contact["next_retry_at"] = due.isoformat(timespec="seconds")
+        contact["retry_note"] = (f"Attempt {attempts} of {settings['retry_max_attempts']} not answered. "
+                                 f"Next try about {due.strftime('%d %b %H:%M')}")
+    elif settings["retry_enabled"] and attempts >= settings["retry_max_attempts"] \
+            and contact.get("call_status") in cf.RETRYABLE_CALL_STATUSES:
+        contact["retry_note"] = f"Gave up after {attempts} attempts"
+
+
+def run_due_retry():
+    """Place at most one due retry call (calls run one at a time, like the main campaign)."""
+    state = load_state()
+    if not state.get("campaign_started", True):
+        return None
+    settings = cf.retry_settings(state.get("agent"))
+    if not settings["retry_enabled"] or not sarvam_configured():
+        return None
+    if any(c.get("status") in {"Starting", "Calling"} for c in state.get("contacts", [])):
+        return None
+    now = datetime.now()
+    due = next((c for c in state.get("contacts", []) if cf.due_for_retry(c, settings, now)), None)
+    if not due:
+        return None
+    with STATE_LOCK:
+        state = load_state()
+        target = next((c for c in state["contacts"] if c.get("phone") == due.get("phone") and c.get("name") == due.get("name")), None)
+        if not target or target.get("status") not in cf.RETRYABLE_STATUSES:
+            return None
+        target["status"] = "Queued"
+        save_state(state)
+    print("AUTO-RETRY calling:", due.get("name"), "attempt", int(due.get("attempts") or 1) + 1, flush=True)
+    return start_real_contact_call(due)
+
+
+async def _retry_scheduler():
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await asyncio.to_thread(run_due_retry)
+        except Exception as exc:
+            print("AUTO-RETRY ERROR:", type(exc).__name__, str(exc)[:200], flush=True)
 
 
 def start_next_real_call():
@@ -466,6 +537,15 @@ async def build(request: Request):
         agent["voice_language"] = value
     if "greeting" in data:
         agent["greeting"] = str(data["greeting"] or "").strip()[:600]
+    if "inbound_greeting" in data:
+        agent["inbound_greeting"] = str(data["inbound_greeting"] or "").strip()[:600]
+    if "inbound_prompt" in data and str(data["inbound_prompt"] or "").strip():
+        agent["inbound_prompt"] = str(data["inbound_prompt"]).strip()[:4000]
+    if "max_call_seconds" in data:
+        agent["max_call_seconds"] = cf.clamp_seconds(data["max_call_seconds"])
+    if any(k in data for k in cf.RETRY_DEFAULTS):
+        merged = {**agent, **{k: data[k] for k in cf.RETRY_DEFAULTS if k in data}}
+        agent.update(cf.retry_settings(merged))
     if "voice_tone" in data:
         value = str(data["voice_tone"] or "normal")
         if value not in {"normal", "friendly", "professional", "calm"}:
@@ -604,7 +684,7 @@ def render_greeting(template, name, subject, event_sentence, event_name, facts):
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-def build_real_call_context(state, contact):
+def build_real_call_context(state, contact, attempt=1):
     """Everything the phone agent needs, built from the DASHBOARD settings and this CSV row only."""
     name = str(contact.get("name", "")).strip()
     if not name:
@@ -612,9 +692,13 @@ def build_real_call_context(state, contact):
     agent = state.get("agent", {})
     subject, event_sentence, event_name = _spoken_event_sentence(state)
     _, facts = intro_event_details(state)
-    template = str(agent.get("greeting", "")).strip() or (
-        "Hello! I'm an AI assistant calling about {event_intro}. {event_details} Am I speaking with {name}?"
-    )
+    if attempt > 1:
+        # Automatic retry after a missed call: same wording as the incoming call-back greeting.
+        template = str(agent.get("inbound_greeting", "")).strip() or cf.inbound_default_greeting()
+    else:
+        template = str(agent.get("greeting", "")).strip() or (
+            "Hello! I'm an AI assistant calling about {event_intro}. {event_details} Am I speaking with {name}?"
+        )
     template = template.replace("{event_intro}", subject)
     opening = render_greeting(template, name, subject, event_sentence, event_name, facts)
     instructions = str(agent.get("prompt", "")).strip()
@@ -628,22 +712,95 @@ def build_real_call_context(state, contact):
         "question is NOT an attendance answer. Never invent names, dates, times or venues. "
         "Never mention other contacts."
     )
+    if attempt > 1:
+        rules += (
+            f" This is call attempt {attempt}: we called {name} before and could not connect. The opening line already asked "
+            "whether they are free to talk. If they say they are busy or not free, say: No problem, we will call you again "
+            "later. Thank you. Then end the call. If they are free, skip any introduction and continue with the normal steps."
+        )
     return {
         "contact_name": name,
         "event_label": event_name,
         "event_details": event_sentence,
         "identity_question": f"Am I speaking with {name}?",
         "opening_message": opening,
-        "call_instructions": "\n\n".join(x for x in (instructions, style, rules) if x),
+        "call_instructions": "\n\n".join(x for x in (
+            instructions, style, cf.time_limit_text(agent.get("max_call_seconds")), rules) if x),
         "language": str(agent.get("voice_language", "") or ""),
     }
 
 
+def inbound_scenario(contact):
+    """'unknown' (number not in CSV), 'answered' (RSVP already recorded) or 'missed' (we could not reach them)."""
+    if not contact:
+        return "unknown"
+    if contact.get("rsvp") and contact.get("status") == "Completed":
+        return "answered"
+    return "missed"
+
+
+def build_inbound_context(state, contact):
+    """Greeting + instructions for a person CALLING US BACK. `contact` is None for unknown callers."""
+    agent = state.get("agent", {})
+    name = str((contact or {}).get("name", "")).strip()
+    subject, event_sentence, event_name = _spoken_event_sentence(state)
+    _, facts = intro_event_details(state)
+    scenario = inbound_scenario(contact)
+    if scenario == "missed":
+        # editable in the dashboard: the main "I called you but you could not attend - are you free now?" line
+        template = str(agent.get("inbound_greeting", "")).strip() or cf.inbound_default_greeting()
+    elif scenario == "answered":
+        template = cf.inbound_answered_greeting()
+    else:
+        template = cf.inbound_unknown_greeting()
+    template = template.replace("{event_intro}", subject)
+    opening = render_greeting(template, name or "there", subject, event_sentence, event_name, facts)
+
+    if scenario == "missed":
+        caller = (f"The caller is {name}, from our invite list (their number matched). We called them earlier but could not "
+                  "connect, and no RSVP is recorded yet. Do not ask who they are.")
+    elif scenario == "answered":
+        caller = (f"The caller is {name}, from our invite list. Recorded RSVP: {contact.get('rsvp')}"
+                  + (f", guests: {contact.get('guests')}" if contact.get("guests") else "") + ". Do not ask who they are.")
+    else:
+        caller = ("The caller's number is NOT on our invite list. Share the event details and say the organiser "
+                  "will contact them to confirm attendance. Do not record an RSVP.")
+    style = " ".join(x for x in (
+        TONE_STYLE.get(agent.get("voice_tone", "normal"), ""),
+        _speed_style(agent.get("voice_speed", 1.0)),
+    ) if x)
+    fact_block = ("EVENT FACTS (the only facts you may state):\n" + "\n".join(facts)) if facts else \
+        "EVENT FACTS: none saved; say you do not have event details."
+    instructions = "\n\n".join(x for x in (
+        fact_block,
+        str(agent.get("inbound_prompt", "")).strip() or cf.DEFAULT_INBOUND_PROMPT,
+        caller, style, cf.time_limit_text(agent.get("max_call_seconds")),
+        "Never invent names, dates, times or venues. Never mention other contacts.",
+    ) if x)
+    return {
+        "contact_name": name,
+        "event_label": event_name,
+        "event_details": event_sentence,
+        "opening_message": opening,
+        "call_instructions": instructions,
+        "language": str(agent.get("voice_language", "") or ""),
+        "known_caller": bool(contact),
+        "scenario": scenario,
+    }
+
+
 @app.get("/api/call-preview")
-async def call_preview(name: str = "Raja"):
+async def call_preview(name: str = "Raja", direction: str = "outbound", scenario: str = "missed"):
     """Dashboard preview of exactly what is sent to Sarvam for a call."""
-    ctx = build_real_call_context(load_state(), {"name": name or "Raja"})
-    return {"opening_message": ctx["opening_message"], "call_instructions": ctx["call_instructions"],
+    state = load_state()
+    if direction == "inbound":
+        fake = None if scenario == "unknown" else {"name": name or "Raja"}
+        if fake and scenario == "answered":
+            fake.update(rsvp="Yes", guests="", status="Completed")
+        ctx = build_inbound_context(state, fake)
+    else:
+        ctx = build_real_call_context(state, {"name": name or "Raja"})
+    return {"opening_message": ctx["opening_message"], "call_instructions": ctx["call_instructions"], "scenario": ctx.get("scenario", ""),
             "language": ctx["language"] or os.getenv("SARVAM_INITIAL_LANGUAGE", "English")}
 
 
@@ -929,6 +1086,8 @@ def call_entry(contact):
         "has_transcript": bool(transcript),
         "has_recording": bool(contact.get("interaction_id")),
         "has_interaction": bool(contact.get("interaction_id")),
+        "direction": "Outbound",
+        "over_limit": cf.over_limit(contact.get("duration"), (load_state().get("agent") or {}).get("max_call_seconds", cf.DEFAULT_MAX_CALL_SECONDS)),
     }
 
 
@@ -936,16 +1095,33 @@ def call_entry(contact):
 async def list_calls(request: Request):
     require_recordings_auth(request)
     state = load_state()
-    return {"calls": [call_entry(c) for c in state.get("contacts", [])
-                      if c.get("attempt_id") or c.get("transcript")]}
+    calls = [call_entry(c) for c in state.get("contacts", []) if c.get("attempt_id") or c.get("transcript")]
+    calls += [inbound_call_entry(c, state) for c in reversed(state.get("inbound_calls", []))]
+    return {"calls": calls}
 
 
-@app.get("/api/calls/{attempt_id}/transcript")
+@app.get("/api/calls/{attempt_id:path}/transcript")
 async def call_transcript(attempt_id: str, request: Request):
     require_recordings_auth(request)
     state = load_state()
     if not find_contact_by_attempt_id(state, attempt_id):
-        raise HTTPException(status_code=404, detail="Call not found")
+        inbound = find_inbound_call(state, attempt_id)
+        if not inbound:
+            raise HTTPException(status_code=404, detail="Call not found")
+        rows, note = inbound.get("transcript") or [], ""
+        if not rows:
+            rows, note = await asyncio.to_thread(fetch_transcript, inbound.get("interaction_id"))
+            if rows:
+                with STATE_LOCK:
+                    state = load_state()
+                    saved = find_inbound_call(state, attempt_id)
+                    if saved:
+                        saved["transcript"] = rows
+                        apply_inbound_result(state, saved)
+                        save_state(state)
+                        inbound = saved
+        return {"call": inbound_call_entry(inbound, state), "transcript": rows, "note": note,
+                "rsvp": inbound.get("rsvp", ""), "guests": inbound.get("guests", "")}
     # Stored webhook transcript first; otherwise fetch it from Sarvam Analytics now.
     transcript, error = await asyncio.to_thread(ensure_transcript, attempt_id)
     contact = find_contact_by_attempt_id(load_state(), attempt_id)
@@ -953,11 +1129,11 @@ async def call_transcript(attempt_id: str, request: Request):
             "rsvp": contact.get("rsvp", ""), "guests": contact.get("guests", "")}
 
 
-@app.get("/api/calls/{attempt_id}/recording")
+@app.get("/api/calls/{attempt_id:path}/recording")
 async def call_recording(attempt_id: str, request: Request):
     require_recordings_auth(request)
     state = load_state()
-    contact = find_contact_by_attempt_id(state, attempt_id)
+    contact = find_contact_by_attempt_id(state, attempt_id) or find_inbound_call(state, attempt_id)
     if not contact:
         raise HTTPException(status_code=404, detail="Call not found")
     interaction_id = str(contact.get("interaction_id") or "")
@@ -1052,6 +1228,10 @@ async def real_campaign(request: Request):
             status_code=400,
             detail="Upload contacts before starting calls."
         )
+
+    if not state.get("campaign_started"):
+        state["campaign_started"] = True  # enables automatic retries for unanswered calls
+        save_state(state)
 
     active = next(
         (
@@ -1177,6 +1357,7 @@ async def sarvam_webhook(request: Request):
         state["last_webhook_received_at"] = datetime.now().isoformat(timespec="seconds")
         state["last_webhook_status"] = status
         contact["call_ended_at"] = datetime.now().isoformat(timespec="seconds")
+        schedule_retry(contact, state)
         save_state(state)
         contact_name = contact.get("name", "")
         generic_webhook = state.get("webhook", {})
@@ -1272,6 +1453,8 @@ def fetch_transcript(interaction_id: str):
         return [], f"Could not reach Sarvam ({type(exc).__name__})."
     if not res.ok:
         print("SARVAM TRANSCRIPT HTTP", res.status_code, flush=True)
+        if res.status_code in (400, 404):
+            return [], "No transcript exists for this call (it did not connect, so nothing was said)."
         return [], f"Sarvam transcript API returned HTTP {res.status_code}."
     try:
         messages = res.json().get("messages", [])
@@ -1302,6 +1485,8 @@ def ensure_transcript(attempt_id: str):
     if not contact:
         return [], "Call not found"
     rows, error = contact.get("transcript") or [], ""
+    if not rows and contact.get("call_status") in {"no_answer", "busy", "failed", "launch_failed"}:
+        return [], "This call did not connect, so there is no transcript."
     if not rows:
         rows, error = fetch_transcript(contact.get("interaction_id"))
     if rows:
@@ -1376,6 +1561,7 @@ def reconcile_one_call(attempt_id: str):
             contact["processed_attempt_id"] = attempt_id
             contact["call_ended_at"] = item.get("end_datetime") or datetime.now(timezone.utc).isoformat()
             contact["reconciled_from"] = "sarvam_analytics"
+            schedule_retry(contact, state)
             save_state(state)
         print("SARVAM ANALYTICS RECONCILED:", attempt_id, status, flush=True)
         return {"attempt_id": attempt_id, "result": "updated", "status": status}
@@ -1430,10 +1616,14 @@ async def _reconciliation_watchdog():
 @app.on_event("startup")
 async def start_reconciliation_watchdog():
     app.state.reconcile_task = asyncio.create_task(_reconciliation_watchdog())
+    app.state.retry_task = asyncio.create_task(_retry_scheduler())
 
 
 @app.on_event("shutdown")
 async def stop_reconciliation_watchdog():
+    retry = getattr(app.state, "retry_task", None)
+    if retry:
+        retry.cancel()
     task = getattr(app.state, "reconcile_task", None)
     if task:
         task.cancel()
@@ -1938,14 +2128,6 @@ async def sarvam_call_instructions(request: Request):
     }
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    print(f"Starting FastAPI RSVP Agent on http://0.0.0.0:{port}")
-    print("Real calls: Sarvam Voice Agents Instant Outbound API")
-    print("Sarvam webhook endpoint: /api/sarvam/webhook")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-
-
 import csv
 import io
 import hmac
@@ -2037,3 +2219,244 @@ async def export_sarvam_contacts(request: Request):
             "Cache-Control": "no-store"
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# INBOUND CALL-BACKS (person calls our Sarvam number after missing/cutting our call)
+# ---------------------------------------------------------------------------
+def find_inbound_call(state, attempt_id):
+    return next((c for c in state.get("inbound_calls", []) if c.get("interaction_id") == attempt_id), None)
+
+
+def inbound_call_entry(call, state=None):
+    limit = ((state or load_state()).get("agent") or {}).get("max_call_seconds", cf.DEFAULT_MAX_CALL_SECONDS)
+    return {
+        "name": call.get("name") or "Unknown caller", "phone": call.get("phone", ""),
+        "status": "Inbound call", "rsvp": call.get("rsvp", ""), "guests": call.get("guests", ""),
+        "attempt_id": call.get("interaction_id", ""), "interaction_id": call.get("interaction_id", ""),
+        "duration": call.get("duration"), "has_transcript": bool(call.get("transcript")),
+        "has_recording": bool(call.get("interaction_id")), "has_interaction": bool(call.get("interaction_id")),
+        "direction": "Inbound", "over_limit": cf.over_limit(call.get("duration"), limit),
+    }
+
+
+def apply_inbound_result(state, call):
+    """Copy the caller's RSVP onto their contact row. Output variables win over transcript reading."""
+    rsvp, guests = extract_sarvam_rsvp(call.get("sarvam_variables") or {})
+    source = "inbound call"
+    if not rsvp and call.get("transcript"):
+        found = extract_rsvp_from_transcript(call["transcript"])
+        rsvp, guests = found["rsvp"], found["guests"]
+    if not rsvp:
+        return False
+    call["rsvp"] = rsvp
+    call["guests"] = ", ".join(guests) if rsvp == "Yes" else ""
+    contact = cf.find_contact_by_phone(state, call.get("phone"))
+    if contact:
+        contact["rsvp"] = rsvp
+        contact["guests"] = call["guests"]
+        contact["status"] = "Completed"
+        contact["result_status"] = "RSVP received on inbound call-back"
+        contact["rsvp_source"] = source
+        contact["last_inbound_at"] = call.get("start_datetime") or datetime.now().isoformat(timespec="seconds")
+    return True
+
+
+INBOUND_DIAG = {}
+
+
+def _note_diag(key, **info):
+    """Remember when Sarvam last reached us (shown in the dashboard's incoming-call check)."""
+    INBOUND_DIAG[key] = {"at": datetime.now().isoformat(timespec="seconds"), **info}
+
+
+def _hook_token_ok(request: Request):
+    """Accept the token as header X-Instructions-Token OR ?token=...; either SARVAM_INSTRUCTIONS_TOKEN
+    or the existing SARVAM_WEBHOOK_TOKEN works, so the hook needs no extra setting."""
+    valid = [t for t in (os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip(), WEBHOOK_TOKEN) if t]
+    supplied = (request.headers.get("X-Instructions-Token", "") or request.query_params.get("token", "")).strip()
+    return bool(supplied) and any(hmac.compare_digest(supplied, v) for v in valid)
+
+
+def _fallback_inbound_context():
+    """Always-valid answer so the caller never hears silence, even if our state file is unreadable."""
+    return {
+        "contact_name": "", "event_label": "our event", "event_details": "",
+        "opening_message": "Hello! This is the AI assistant for our upcoming event. I called you earlier but you were not able "
+                           "to take the call. Are you free to talk now?",
+        "call_instructions": "You are an RSVP assistant. Ask if the person is free. If yes, ask whether they will attend the "
+                             "event and how many guests they will bring. If busy, say you will call again later. Be brief.",
+        "language": "", "known_caller": False, "scenario": "fallback",
+    }
+
+
+def _inbound_context_for(request: Request, phone: str):
+    if not _hook_token_ok(request):
+        _note_diag("hook_rejected")
+        print("INBOUND HOOK REJECTED: missing/invalid token (use header X-Instructions-Token or ?token=)", flush=True)
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    try:
+        state = load_state()
+        contact = cf.find_contact_by_phone(state, phone)
+        ctx = build_inbound_context(state, contact)
+    except Exception as exc:  # never let the hook fail: a failed hook means a dead, silent call
+        print("INBOUND HOOK ERROR, using fallback:", type(exc).__name__, flush=True)
+        ctx = _fallback_inbound_context()
+    _note_diag("hook_ok", phone_last4=cf.digits(phone)[-4:], scenario=ctx.get("scenario"))
+    print("INBOUND HOOK OK:", ctx.get("scenario"), cf.digits(phone)[-4:], flush=True)
+    return ctx
+
+
+@app.get("/api/sarvam/inbound-context")
+async def sarvam_inbound_context(request: Request, phone: str = ""):
+    """On-start hook for the INBOUND agent: called with the caller's number before the agent speaks."""
+    return _inbound_context_for(request, phone)
+
+
+@app.post("/api/sarvam/inbound-context")
+async def sarvam_inbound_context_post(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    phone = next((str(body[k]) for k in ("phone", "user_phone_number", "caller_number", "caller", "from")
+                  if body.get(k)), request.query_params.get("phone", ""))
+    return _inbound_context_for(request, phone)
+
+
+@app.get("/api/inbound/health")
+async def inbound_health():
+    """Dashboard self-check for incoming calls."""
+    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    public = base.startswith("https://") and not any(h in base for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+    state = load_state()
+    last_call = max((c.get("start_datetime") or "" for c in state.get("inbound_calls", [])), default="")
+    token = os.getenv("SARVAM_INSTRUCTIONS_TOKEN", "").strip() or WEBHOOK_TOKEN
+    checks = [
+        {"ok": public, "label": "Public HTTPS address (PUBLIC_BASE_URL)",
+         "hint": "" if public else "Sarvam cannot reach localhost. Use Render or an ngrok https address."},
+        {"ok": bool(token), "label": "Token for the hook (SARVAM_INSTRUCTIONS_TOKEN or SARVAM_WEBHOOK_TOKEN)",
+         "hint": "" if token else "Set SARVAM_WEBHOOK_TOKEN in .env and restart."},
+    ]
+    hook = INBOUND_DIAG.get("hook_ok")
+    rejected = INBOUND_DIAG.get("hook_rejected")
+    checks.append({"ok": bool(hook), "label": "Sarvam has called the on-start hook" + (f" (last {hook['at']}, {hook.get('scenario')})" if hook else ""),
+                   "hint": "" if hook else ("Hook was called with a WRONG token at " + rejected["at"] if rejected else
+                            "Not yet. Ring the AI number now, then press Check again. If it stays empty the call died inside Sarvam (no inbound deployment, or agent does not speak first).")})
+    checks.append({"ok": bool(last_call), "label": "An inbound call has completed" + (f" (last {last_call})" if last_call else ""),
+                   "hint": "" if last_call else "Needs the inbound-webhook link in the Sarvam Inbound deployment."})
+    defaults = build_inbound_context(state, {"name": ""})
+    return {"checks": checks, "sarvam_defaults": {
+                "opening_message": defaults["opening_message"], "call_instructions": defaults["call_instructions"]},
+            "hook_url": f"{base}/api/sarvam/inbound-context?token=YOUR_TOKEN" if base else "",
+            "webhook_url": f"{base}/api/sarvam/inbound-webhook?token=YOUR_TOKEN" if base else ""}
+
+
+@app.post("/api/sarvam/inbound-webhook")
+async def sarvam_inbound_webhook(request: Request):
+    """Sarvam Inbound deployment -> call-completion webhook (transcript, duration, caller number)."""
+    supplied = request.query_params.get("token", "")
+    if not WEBHOOK_TOKEN or not secrets.compare_digest(supplied, WEBHOOK_TOKEN):
+        print("SARVAM INBOUND WEBHOOK REJECTED: missing or invalid token", flush=True)
+        raise HTTPException(status_code=401, detail="Invalid webhook token")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON webhook")
+    if not isinstance(payload, dict) or not payload.get("interaction_id"):
+        raise HTTPException(status_code=422, detail="interaction_id is required")
+
+    interaction_id = str(payload["interaction_id"])
+    phone = str(payload.get("user_phone_number") or "").strip()
+    with STATE_LOCK:
+        state = load_state()
+        state.setdefault("inbound_calls", [])
+        call = find_inbound_call(state, interaction_id)
+        is_new = call is None
+        if is_new:
+            call = {"interaction_id": interaction_id}
+            state["inbound_calls"].append(call)
+        contact = cf.find_contact_by_phone(state, phone)
+        call.update({
+            "phone": phone, "agent_phone_number": payload.get("agent_phone_number", ""),
+            "name": (contact or {}).get("name", ""), "duration": payload.get("duration"),
+            "start_datetime": payload.get("start_datetime", ""), "end_datetime": payload.get("end_datetime", ""),
+        })
+        if payload.get("interaction_transcript"):
+            call["transcript"] = payload["interaction_transcript"]
+        final_vars = payload.get("final_agent_variables") or payload.get("output_agent_variables") or {}
+        if isinstance(final_vars, dict) and final_vars:
+            call["sarvam_variables"] = final_vars
+        apply_inbound_result(state, call)
+        if contact:  # they called us back: stop chasing them with automatic retries
+            contact.pop("next_retry_at", None)
+            contact["last_inbound_at"] = call.get("start_datetime") or datetime.now().isoformat(timespec="seconds")
+            contact["retry_note"] = "They called back - automatic retries stopped"
+        state["inbound_calls"] = state["inbound_calls"][-500:]
+        save_state(state)
+    _note_diag("webhook_ok", interaction_id=interaction_id)
+    print("SARVAM INBOUND CALL SAVED:", interaction_id, phone[-4:], flush=True)
+    if not call.get("transcript"):
+        async def _later():
+            for delay in (3, 15, 45, 120):
+                await asyncio.sleep(delay)
+                rows, _ = await asyncio.to_thread(fetch_transcript, interaction_id)
+                if rows:
+                    with STATE_LOCK:
+                        st = load_state()
+                        saved = find_inbound_call(st, interaction_id)
+                        if saved:
+                            saved["transcript"] = rows
+                            apply_inbound_result(st, saved)
+                            save_state(st)
+                    return
+        asyncio.create_task(_later())
+    return {"ok": True, "interaction_id": interaction_id, "matched_contact": bool(contact)}
+
+
+# ---------------------------------------------------------------------------
+# REPORT: filter + choose columns + download (csv / xlsx / json / pdf)
+# ---------------------------------------------------------------------------
+@app.post("/api/report")
+async def report(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object")
+    fmt = str(body.get("format") or "csv").lower()
+    columns = cf.choose_columns(body.get("columns"))
+    if "transcript" in columns:
+        require_recordings_auth(request)  # transcripts are private, same protection as the call history
+    state = load_state()
+    rows = cf.apply_filters(cf.collect_rows(state), body.get("filters") or {})
+    if fmt == "preview":
+        shown = [{k: r[k] for k in columns if k != "transcript"} for r in rows[:8]]
+        return {"count": len(rows), "total": len(cf.collect_rows(state)), "rows": shown, "columns": columns}
+    if not rows:
+        raise HTTPException(status_code=422, detail=f"No rows match these filters (0 of {len(cf.collect_rows(state))}). Clear the filters and try again.")
+    try:
+        data, content_type, ext = cf.export_report(rows, columns, fmt, note=cf.describe_filters(body.get("filters") or {}))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ImportError as exc:
+        raise HTTPException(status_code=501, detail=f"Missing package for {fmt}: {exc.name}. Run pip install -r requirements.txt")
+    name = f"rsvp_report_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
+    return Response(content=data, media_type=content_type, headers={
+        "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+@app.get("/api/report/columns")
+async def report_columns():
+    return {"columns": [{"key": k, "label": l} for k, l in cf.COLUMNS], "default": cf.DEFAULT_COLUMNS}
+
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5000"))
+    print(f"Starting FastAPI RSVP Agent on http://0.0.0.0:{port}")
+    print("Real calls: Sarvam Voice Agents Instant Outbound API")
+    print("Sarvam webhook endpoint: /api/sarvam/webhook")
+    print("Inbound call-back webhook: /api/sarvam/inbound-webhook | on-start hook: /api/sarvam/inbound-context")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
+

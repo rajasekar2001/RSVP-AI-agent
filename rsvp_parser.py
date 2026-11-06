@@ -17,7 +17,7 @@ NUMBER_WORDS = {
 
 ATTEND_Q = re.compile(
     r"(will you (be )?(attend|coming|come|join|make it)|are you (attending|coming|able to|planning)|"
-    r"can you (attend|come|make it|join)|be attending|attending\?|confirm your (attendance|rsvp)|"
+    r"can you (attend|come|make it|join)|confirm (if|whether) you can (attend|come|make it|join)|be attending|attending\?|confirm your (attendance|rsvp)|"
     r"coming (to|for) the)", re.I)
 GUEST_COUNT_Q = re.compile(
     r"(how many|any|additional|extra|bring(ing)?|plus[- ]?one|accompan)[^.?!]*\b(guest|people|person|plus|friend|famil)", re.I)

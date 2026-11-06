@@ -84,7 +84,15 @@ function voicePrefs() {
         voice_language: $("#voiceLanguage")?.value || "",
         voice_tone: $("#voiceTone")?.value || "normal",
         voice_speed: Number($("#voiceSpeed")?.value || 1),
-        greeting: $("#greetingBox") ? $("#greetingBox").value : undefined
+        greeting: $("#greetingBox") ? $("#greetingBox").value : undefined,
+        inbound_greeting: $("#inboundGreetingBox") ? $("#inboundGreetingBox").value : undefined,
+        inbound_prompt: $("#inboundPromptBox") ? $("#inboundPromptBox").value : undefined,
+        max_call_seconds: $("#maxCallSeconds") ? Number($("#maxCallSeconds").value || 50) : undefined,
+        retry_enabled: $("#retryEnabled") ? $("#retryEnabled").checked : undefined,
+        retry_interval_minutes: $("#retryMinutes") ? Number($("#retryMinutes").value || 60) : undefined,
+        retry_max_attempts: $("#retryMax") ? Number($("#retryMax").value || 5) : undefined,
+        retry_window_start: $("#retryFrom") ? $("#retryFrom").value || "09:00" : undefined,
+        retry_window_end: $("#retryTo") ? $("#retryTo").value || "20:00" : undefined
     };
 }
 
@@ -92,6 +100,14 @@ function syncVoicePrefs() {
     if ($("#voiceLanguage")) $("#voiceLanguage").value = state.agent?.voice_language || "";
     if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
     if ($("#greetingBox")) $("#greetingBox").value = state.agent?.greeting || "";
+    if ($("#inboundGreetingBox")) $("#inboundGreetingBox").value = state.agent?.inbound_greeting || "";
+    if ($("#inboundPromptBox")) $("#inboundPromptBox").value = state.agent?.inbound_prompt || "";
+    if ($("#maxCallSeconds")) $("#maxCallSeconds").value = state.agent?.max_call_seconds || 50;
+    if ($("#retryEnabled")) $("#retryEnabled").checked = state.agent?.retry_enabled !== false;
+    if ($("#retryMinutes")) $("#retryMinutes").value = state.agent?.retry_interval_minutes || 60;
+    if ($("#retryMax")) $("#retryMax").value = state.agent?.retry_max_attempts || 5;
+    if ($("#retryFrom")) $("#retryFrom").value = state.agent?.retry_window_start || "09:00";
+    if ($("#retryTo")) $("#retryTo").value = state.agent?.retry_window_end || "20:00";
     if ($("#voiceSpeed")) $("#voiceSpeed").value = state.agent?.voice_speed ?? 1;
     if ($("#voiceSpeedLabel")) $("#voiceSpeedLabel").textContent = `${Number($("#voiceSpeed")?.value || 1).toFixed(1)}×`;
 }
@@ -189,6 +205,20 @@ function render() {
                        </div>`
                     : "";
 
+                const limit = Number(state.agent?.max_call_seconds || 50);
+                const dur = Number(contact.duration);
+                const durationDetail = Number.isFinite(dur) && contact.duration !== null && contact.duration !== ""
+                    ? `<div style="font-size:11px;color:${dur > limit ? "#b45309" : "#64748b"};margin-top:4px">
+                         Duration: ${dur.toFixed(1)}s${dur > limit ? ` ⚠ over ${limit}s limit` : ""}
+                       </div>`
+                    : "";
+                const retryDetail = contact.retry_note
+                    ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px">🔁 ${contact.retry_note}${contact.attempts ? ` (calls made: ${contact.attempts})` : ""}</div>`
+                    : "";
+                const inboundDetail = contact.last_inbound_at
+                    ? `<div style="font-size:11px;color:#0f766e;margin-top:4px">☎ Called back (inbound)</div>`
+                    : "";
+
                 const attemptDetail = attemptId
                     ? `<div style="font-size:11px;color:#64748b;margin-top:4px;overflow-wrap:anywhere">
                          Attempt ID: ${escapeHtml(attemptId)}
@@ -203,6 +233,9 @@ function render() {
                             <strong>${escapeHtml(status)}</strong>
                             ${callDetail}
                             ${failureDetail}
+                            ${durationDetail}
+                            ${inboundDetail}
+                            ${retryDetail}
                             ${attemptDetail}
                         </td>
                         <td>${escapeHtml(contact.rsvp || (status === "Call ended" ? "Awaiting RSVP result" : "—"))}</td>
@@ -1025,7 +1058,7 @@ async function refreshCallHistory() {
             row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #eee";
             const info = document.createElement("span");
             info.style.flex = "1 1 240px";
-            info.textContent = `${call.name || "Guest"} — ${call.status || "Unknown"} — ${call.duration == null ? "—" : Number(call.duration).toFixed(1)+"s"}`;
+            info.textContent = `${call.direction === "Inbound" ? "⬅ Inbound" : "➡ Outbound"} · ${call.name || "Guest"} — ${call.status || "Unknown"} — ${call.duration == null ? "—" : Number(call.duration).toFixed(1)+"s"}${call.over_limit ? " ⚠ over limit" : ""}`;
             row.appendChild(info);
 
             const transcript = document.createElement("button");
@@ -1161,4 +1194,129 @@ $("#previewCall")?.addEventListener("click", async e => {
         box.style.display = "block";
         box.textContent = `Language: ${d.language}\n\nGREETING:\n${d.opening_message}\n\nINSTRUCTIONS:\n${d.call_instructions}`;
     } catch (err) { toast(err.message, 5000); }
+});
+
+
+// ---------------- inbound preview ----------------
+$$(".previewInbound").forEach(link => link.addEventListener("click", async e => {
+    e.preventDefault();
+    try {
+        const scenario = link.dataset.scenario || "missed";
+        const d = await api(`/api/call-preview?name=Raja&direction=inbound&scenario=${scenario}`);
+        const box = $("#callPreview");
+        if (!box) return;
+        box.style.display = "block";
+        box.textContent = `INCOMING CALL (${scenario})\nLanguage: ${d.language}\n\nGREETING:\n${d.opening_message}\n\nINSTRUCTIONS:\n${d.call_instructions}`;
+        box.scrollIntoView({behavior: "smooth", block: "nearest"});
+    } catch (err) { toast(err.message, 5000); }
+}));
+
+$("#checkInbound")?.addEventListener("click", async () => {
+    const box = $("#inboundHealth");
+    try {
+        const d = await api("/api/inbound/health");
+        const esc = s => String(s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+        box.innerHTML = d.checks.map(c =>
+            `<div>${c.ok ? "✅" : "❌"} ${esc(c.label)}${c.hint ? `<br><span style="color:#b45309;margin-left:22px">${esc(c.hint)}</span>` : ""}</div>`).join("")
+            + (d.sarvam_defaults ? `<div style="margin-top:10px"><b>Safety defaults to paste into the Sarvam INBOUND agent</b> (as the default value of the input variables, so the AI is never silent even if the hook fails):
+                 <br><small>opening_message</small><textarea readonly rows="3" style="width:100%;font-size:12px">${esc(d.sarvam_defaults.opening_message)}</textarea>
+                 <small>call_instructions</small><textarea readonly rows="6" style="width:100%;font-size:12px">${esc(d.sarvam_defaults.call_instructions)}</textarea></div>` : "")
+            + (d.hook_url ? `<div style="margin-top:8px"><b>Sarvam on-start hook URL:</b><br><code style="word-break:break-all">${esc(d.hook_url)}</code><br><b>Inbound webhook URL:</b><br><code style="word-break:break-all">${esc(d.webhook_url)}</code></div>` : "");
+    } catch (err) { box.textContent = err.message; }
+});
+
+// ---------------- report ----------------
+const REPORT_COLUMNS = [
+  ["name","Name"],["phone","Phone"],["direction","Direction"],["status","Status"],["call_status","Call result"],
+  ["rsvp","RSVP"],["guests","Guests"],["guest_count","Guest count"],["duration","Duration (s)"],
+  ["over_limit","Over time limit"],["call_time","Call time"],["rsvp_source","RSVP source"],
+  ["failure_reason","Failure reason"],["attempt_id","Attempt ID"],["interaction_id","Interaction ID"],["transcript","Transcript"]
+];
+const REPORT_DEFAULTS = ["name","phone","direction","status","rsvp","guests","guest_count","duration","call_time"];
+
+function selected(sel) { return $$(`${sel} input:checked`).map(o => o.value); }
+
+function reportBody(format) {
+    const filters = {
+        search: $("#rpSearch").value.trim(),
+        direction: selected("#rpDirection"),
+        status: selected("#rpStatus"),
+        rsvp: selected("#rpRsvp"),
+        date_from: $("#rpFrom").value, date_to: $("#rpTo").value,
+        min_duration: $("#rpMin").value, max_duration: $("#rpMax").value,
+        over_limit_only: $("#rpOver").checked
+    };
+    const g = $("#rpGuests").value;
+    if (g) filters.has_guests = g === "yes";
+    const columns = $$("#rpColumns input:checked").map(i => i.value);
+    return { filters, columns, format };
+}
+
+async function reportRequest(format) {
+    const body = reportBody(format);
+    const headers = {"Content-Type": "application/json"};
+    if (body.columns.includes("transcript")) {
+        if (!recordingsAccessToken) throw new Error("Unlock call history first to include transcripts");
+        headers["X-Recordings-Token"] = recordingsAccessToken;
+    }
+    const res = await fetch("/api/report", {method: "POST", headers, body: JSON.stringify(body)});
+    if (!res.ok) {
+        let reason = `HTTP ${res.status}`;
+        try { reason = (await res.json()).detail || reason; } catch (_) {}
+        throw new Error(reason);
+    }
+    return res;
+}
+
+let reportMatches = null;
+
+async function updateReportCount() {
+    try {
+        const d = await (await reportRequest("preview")).json();
+        reportMatches = d.count;
+        $("#rpNote").textContent = d.count
+            ? `${d.count} of ${d.total} rows match your filters.`
+            : `0 of ${d.total} rows match your filters - click "Clear filters" to include everything.`;
+        $("#rpNote").style.color = d.count ? "" : "#b45309";
+    } catch (e) { reportMatches = null; $("#rpNote").textContent = e.message; }
+}
+
+function clearReportFilters() {
+    $$("#reportModal #rpDirection input, #reportModal #rpStatus input, #reportModal #rpRsvp input, #reportModal #rpOver").forEach(i => i.checked = false);
+    ["#rpSearch", "#rpFrom", "#rpTo", "#rpMin", "#rpMax"].forEach(s => { $(s).value = ""; });
+    $("#rpGuests").value = "";
+    updateReportCount();
+}
+
+function openReport() {
+    const host = $("#rpColumns");
+    if (!host.children.length) {
+        host.innerHTML = REPORT_COLUMNS.map(([k, l]) =>
+            `<label style="display:flex;gap:6px;align-items:center;margin:0;color:#333"><input type="checkbox" style="width:auto" value="${k}" ${REPORT_DEFAULTS.includes(k) ? "checked" : ""}> ${l}</label>`).join("");
+        $("#reportModal").addEventListener("change", updateReportCount);
+        $("#rpSearch").addEventListener("input", updateReportCount);
+    }
+    $("#reportModal").classList.add("open");
+    updateReportCount();
+}
+
+$("#reportBtn")?.addEventListener("click", openReport);
+$("#reportClose")?.addEventListener("click", () => $("#reportModal").classList.remove("open"));
+$("#rpClear")?.addEventListener("click", clearReportFilters);
+$("#rpDownload")?.addEventListener("click", async () => {
+    try {
+        await updateReportCount();
+        if (reportMatches === 0) { toast("No rows match the filters. Click Clear filters first.", 6000); return; }
+        const format = $("#rpFormat").value;
+        const res = await reportRequest(format);
+        const blob = await res.blob();
+        const cd = res.headers.get("Content-Disposition") || "";
+        const name = (cd.match(/filename="([^"]+)"/) || [])[1] || `rsvp_report.${format}`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        toast(`Downloaded ${name}`);
+    } catch (e) { toast(e.message, 6000); }
 });

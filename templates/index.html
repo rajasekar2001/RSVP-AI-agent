@@ -9,7 +9,7 @@
 <div class="orb orb1"></div><div class="orb orb2"></div>
 <header class="topbar">
   <div class="logo"><span class="spark">✦</span><b>Genie</b></div>
-  <div class="top-right"><span id="contactCount">{{ state.contacts|length }} contacts</span><button id="resetBtn" class="ghost small">Reset</button><div class="avatar">A</div></div>
+  <div class="top-right"><span id="contactCount">{{ state.contacts|length }} contacts</span><button id="reportBtn" class="ghost small">⬇ Report</button><button id="resetBtn" class="ghost small">Reset</button><div class="avatar">A</div></div>
 </header>
 
 <main>
@@ -57,6 +57,32 @@
             <label for="voiceSpeed">Speaking speed: <b id="voiceSpeedLabel">1.0×</b></label>
             <input id="voiceSpeed" type="range" min="0.7" max="1.5" step="0.1" value="1.0" />
             <small>Real calls: greeting, instructions, language, tone and speed are sent to the phone agent on every call. <a href="#" id="previewCall">Preview what the phone agent will receive</a></small><pre id="callPreview" style="white-space:pre-wrap;font-size:12px;background:#f7f7f8;border-radius:8px;padding:8px;display:none"></pre>
+          </div>
+          <div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:14px 0;display:grid;gap:10px">
+            <strong>Call limits &amp; incoming calls</strong>
+            <label for="maxCallSeconds">Maximum call length (seconds, 20–300)</label>
+            <input id="maxCallSeconds" type="number" min="20" max="300" step="5" value="{{ state.agent.max_call_seconds or 50 }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:120px">
+            <small>The AI is told to finish within this time. Calls that run longer are flagged "over limit" in the table and report.</small>
+            <strong style="margin-top:6px">Automatic retry for unanswered calls</strong>
+            <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="retryEnabled" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('retry_enabled', True) else '' }}> Call again when a call is not answered (busy / no answer / failed)</label>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">
+              <div><label for="retryMinutes">Retry after (minutes)</label><input id="retryMinutes" type="number" min="5" max="1440" step="5" value="{{ state.agent.get('retry_interval_minutes', 60) }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:110px"></div>
+              <div><label for="retryMax">Max attempts (1–10)</label><input id="retryMax" type="number" min="1" max="10" value="{{ state.agent.get('retry_max_attempts', 5) }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:110px"></div>
+              <div><label for="retryFrom">Only call from</label><input id="retryFrom" type="time" value="{{ state.agent.get('retry_window_start', '09:00') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd"></div>
+              <div><label for="retryTo">until</label><input id="retryTo" type="time" value="{{ state.agent.get('retry_window_end', '20:00') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd"></div>
+            </div>
+            <small>Retries stop as soon as the person picks up, gives an RSVP, or calls the AI back. Retries only happen inside the call hours above (this computer's clock) and never more than the max attempts.</small>
+            <label for="inboundGreetingBox">Missed-call greeting (used when someone calls the AI back, and for automatic retry calls)</label>
+            <textarea id="inboundGreetingBox" class="instruction" rows="3" placeholder="Leave empty for default. Placeholders: {name} {event} {date} {time} {venue} {event_details}">{{ state.agent.inbound_greeting or '' }}</textarea>
+            <label for="inboundPromptBox">Incoming call instructions</label>
+            <textarea id="inboundPromptBox" class="instruction" rows="6">{{ state.agent.inbound_prompt or '' }}</textarea>
+            <small>Preview an incoming call:
+              <a href="#" class="previewInbound" data-scenario="missed">missed-call callback</a> ·
+              <a href="#" class="previewInbound" data-scenario="answered">already answered</a> ·
+              <a href="#" class="previewInbound" data-scenario="unknown">unknown number</a>
+            </small>
+            <div><button type="button" id="checkInbound" class="ghost small">Check incoming-call setup</button></div>
+            <div id="inboundHealth" style="font-size:13px;line-height:1.6"></div>
           </div>
           <div class="setup-row"><span>Voice</span><b>Shreya</b></div>
           <button id="saveInstructions" class="black">Save changes</button>
@@ -108,6 +134,32 @@
 </main>
 
 <div id="webhookModal" class="modal"><div class="modal-card"><button class="x">×</button><h2>Webhook</h2><p>When an RSVP finishes, POST the result to this URL.</p><input id="webhookUrl" placeholder="https://your-site.com/api/rsvp"><button id="saveWebhook" class="black full">Save webhook</button></div></div>
+<div id="reportModal" class="modal"><div class="modal-card" style="width:min(720px,94vw);max-height:90vh;overflow:auto">
+  <button class="x" id="reportClose" type="button">×</button>
+  <h2 style="margin-top:0">Download report</h2>
+  <p class="muted">Choose what to include, filter the rows, then pick a file type. Leave a filter empty to include everything.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+    <div><label>Search (name, phone, guest)</label><input id="rpSearch" placeholder="e.g. Raja"></div>
+    <div><label>Call type <span class="muted">(none ticked = all)</span></label><div id="rpDirection"><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Outbound"> Outbound (AI called)</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Inbound"> Inbound (they called AI)</label></div></div>
+    <div><label>Status <span class="muted">(none ticked = all)</span></label><div id="rpStatus"><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Ready"> Ready</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Calling"> Calling</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Call ended"> Call ended</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Completed"> Completed</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="No answer"> No answer</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Busy"> Busy</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Failed"> Failed</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Inbound call"> Inbound call</label></div></div>
+    <div><label>RSVP <span class="muted">(none ticked = all)</span></label><div id="rpRsvp"><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Yes"> Yes</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="No"> No</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="Maybe"> Maybe</label><label style="display:flex;gap:6px;align-items:center;margin:0 0 4px;color:#333;font-size:13px"><input type="checkbox" style="width:auto" value="none"> No RSVP yet</label></div></div>
+    <div><label>Guests</label><select id="rpGuests"><option value="">Any</option><option value="yes">Only with guests</option><option value="no">Only without guests</option></select></div>
+    <div><label>From date</label><input id="rpFrom" type="date"></div>
+    <div><label>To date</label><input id="rpTo" type="date"></div>
+    <div><label>Min duration (s)</label><input id="rpMin" type="number" min="0"></div>
+    <div><label>Max duration (s)</label><input id="rpMax" type="number" min="0"></div>
+    <div style="align-self:end"><label style="display:flex;gap:8px;align-items:center"><input id="rpOver" type="checkbox" style="width:auto"> Only calls over the time limit</label></div>
+  </div>
+  <label style="margin-top:14px">Columns</label>
+  <div id="rpColumns" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 12px;font-size:13px"></div>
+  <p class="muted" id="rpNote" style="margin:12px 0 4px"></p>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <label style="margin:0">File type</label>
+    <select id="rpFormat"><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV (.csv)</option><option value="pdf">PDF (.pdf)</option><option value="json">JSON (.json)</option></select>
+    <button id="rpDownload" class="black" type="button">⬇ Download</button><button id="rpClear" class="ghost" type="button">Clear filters</button>
+  </div>
+  <small class="muted">Including the Transcript column needs the call history to be unlocked first.</small>
+</div></div>
 <div id="toast" class="toast"></div>
 <script>window.INIT_STATE={{ state|tojson }};</script>
 <script src="{{ url_for('static', path='app.js') }}"></script>

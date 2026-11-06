@@ -9,7 +9,9 @@
     "voice_language": "en-IN",
     "voice_tone": "normal",
     "voice_speed": 1.5,
-    "greeting": "Hello! I'm an AI assistant calling about our upcoming event. The event is on {date} at {time} at {venue}. Am I speaking with {name}?"
+    "greeting": "Hello! I'm an AI assistant calling about our upcoming event. The event is on {date} at {time} at {venue}. Am I speaking with {name}?",
+    "inbound_greeting": "Hello {name}! I called you earlier about the event on {date} at {time}, but you could not take the call. Are you free to talk now?",
+    "max_call_seconds": 50
   },
   "knowledge": [],
   "webhook": {
@@ -20,81 +22,21 @@
     {
       "name": "Raja",
       "phone": "+918903632050",
-      "status": "Completed",
-      "rsvp": "Yes",
-      "guests": "Manoj, Vinod",
-      "attempt_id": "b5d1bfe7-5217-433e-90d4-1ad8f51635c9",
-      "call_status": "connected",
-      "launch_warning": "Sarvam agent is missing variables: call_instructions, opening_message. Create them in the Sarvam agent.",
-      "interaction_id": "20261103/1be2283a-17:43:24-e5873069",
-      "duration": 37.0769157409668,
+      "status": "Failed",
+      "rsvp": "",
+      "guests": "",
+      "attempts": 1,
+      "attempt_id": "9855291e-f00d-449a-a3ee-86324c9e4f82",
+      "call_status": "failed",
+      "launch_warning": "Sarvam agent is missing variables: opening_message, call_instructions. Create them in the Sarvam agent.",
+      "interaction_id": "NO_INTERACTION_ID",
+      "duration": 0.0,
       "failure_reason": "NO_FAILURE_REASON",
-      "transcript": [
-        {
-          "role": "agent",
-          "en_text": "Hello! I'm an AI assistant calling on behalf of the event organiser to confirm your attendance for Saturday's event. Will you be attending?",
-          "language": "English"
-        },
-        {
-          "role": "user",
-          "en_text": "Yes.",
-          "language": "UNKNOWN"
-        },
-        {
-          "role": "agent",
-          "en_text": "That's great! Will you be bringing any additional guests with you?",
-          "language": "English"
-        },
-        {
-          "role": "user",
-          "en_text": "Two guests.",
-          "language": "UNKNOWN"
-        },
-        {
-          "role": "agent",
-          "en_text": "Got it. Could you please tell me the name of the first guest?",
-          "language": "English"
-        },
-        {
-          "role": "user",
-          "en_text": "Manoj.",
-          "language": "UNKNOWN"
-        },
-        {
-          "role": "agent",
-          "en_text": "Thanks. And what is the name of the second guest?",
-          "language": "English"
-        },
-        {
-          "role": "user",
-          "en_text": "Vinod.",
-          "language": "UNKNOWN"
-        },
-        {
-          "role": "agent",
-          "en_text": "Alright, so you are attending with two guests, Manoj and Vinod. Does that sound correct?",
-          "language": "English"
-        },
-        {
-          "role": "user",
-          "en_text": "Yes, yes.",
-          "language": "UNKNOWN"
-        },
-        {
-          "role": "agent",
-          "en_text": "Perfect. Thank you for confirming! We look forward to seeing you all on Saturday. Have a great day!",
-          "language": "English"
-        }
-      ],
-      "sarvam_variables": {
-        "user_name": "Manan",
-        "call_summary": "The AI assistant successfully confirmed the user's attendance for Saturday's event and registered two guests, Manoj and Vinod."
-      },
-      "result_status": "RSVP read from transcript",
-      "rsvp_source": "transcript",
-      "processed_attempt_id": "b5d1bfe7-5217-433e-90d4-1ad8f51635c9",
-      "call_ended_at": "2026-11-03T12:14:01",
-      "reconciled_from": "sarvam_analytics"
+      "processed_attempt_id": "9855291e-f00d-449a-a3ee-86324c9e4f82",
+      "call_ended_at": "2026-11-06T10:55:58.638988+00:00",
+      "reconciled_from": "sarvam_analytics",
+      "next_retry_at": "2026-11-06T17:25:58",
+      "retry_note": "Attempt 1 of 5 not answered. Next try about 06 Nov 17:25"
     }
   ],
   "tests": [
@@ -102,22 +44,23 @@
       "id": 1,
       "title": "Happy path",
       "description": "Says yes, brings one guest, gives the name",
-      "status": "passed",
-      "time": "0:42"
+      "status": "ready",
+      "time": ""
     },
     {
       "id": 2,
       "title": "Caller says no",
       "description": "Declines, agent thanks them and ends the call",
-      "status": "passed",
-      "time": "0:18"
+      "status": "ready",
+      "time": ""
     },
     {
       "id": 3,
       "title": "Two plus ones",
       "description": "Collected and saved both guest names",
-      "status": "passed",
-      "time": "0:33"
+      "status": "ready",
+      "time": ""
     }
-  ]
+  ],
+  "campaign_started": true
 }
