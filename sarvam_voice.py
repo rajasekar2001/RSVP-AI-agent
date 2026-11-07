@@ -163,6 +163,31 @@ def get_sarvam_error(response):
     return str(error)[:500]
 
 
+def voice_agent(gender: str):
+    """Pick the Sarvam agent (and version) for the dashboard's Male/Female choice.
+
+    A call's speaker voice is a property of the Sarvam agent version, so a male and a
+    female voice are two agents created once in Sarvam (same shell, different speaker).
+    Returns (app_id, version, note). `note` is non-empty when the requested voice is not
+    configured and the default agent is used instead.
+    """
+    g = str(gender or "").strip().lower()
+    if g in {"male", "female"}:
+        key = g.upper()
+        app_id = setting(f"SARVAM_APP_ID_{key}")
+        version = setting(f"SARVAM_APP_VERSION_{key}") or SARVAM_APP_VERSION
+        if app_id and re.fullmatch(r"[1-9]\d*", str(version)):
+            return app_id, str(version), ""
+        return SARVAM_APP_ID, SARVAM_APP_VERSION, (
+            f"{g.title()} voice requested but SARVAM_APP_ID_{key} is not set: the default agent's voice was used."
+        )
+    return SARVAM_APP_ID, SARVAM_APP_VERSION, ""
+
+
+def voice_agents_configured():
+    return {g: bool(setting(f"SARVAM_APP_ID_{g.upper()}")) for g in ("female", "male")}
+
+
 SARVAM_LANGUAGES = {
     "bengali", "gujarati", "kannada", "malayalam", "tamil", "telugu", "punjabi",
     "sanskrit", "odia", "marathi", "hindi", "english", "assamese",
@@ -207,9 +232,10 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
             "?token=" + quote(SARVAM_WEBHOOK_TOKEN, safe="")
         )
 
+    chosen_app_id, chosen_version, voice_note = voice_agent((context or {}).get("voice_gender"))
     app_config = {
-        "app_id": SARVAM_APP_ID,
-        "app_version": int(SARVAM_APP_VERSION),
+        "app_id": chosen_app_id,
+        "app_version": int(chosen_version),
         "connection_config": {
             "connection_id": SARVAM_CONNECTION_ID,
             "agent_phone_number": agent_phone,
@@ -260,9 +286,10 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
     # Never log secret API credentials.
     logger.warning(
         "Starting Sarvam RSVP call: "
-        "app_id=%s version=%s contact=%s",
-        SARVAM_APP_ID,
-        SARVAM_APP_VERSION,
+        "app_id=%s version=%s voice=%s contact=%s",
+        chosen_app_id,
+        chosen_version,
+        (context or {}).get("voice_gender") or "default",
         contact_name,
     )
 
@@ -336,13 +363,15 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
         "Sarvam call accepted: attempt_id=%s "
         "app_id=%s version=%s",
         attempt_id,
-        SARVAM_APP_ID,
-        SARVAM_APP_VERSION,
+        chosen_app_id,
+        chosen_version,
     )
 
     return {
         "attempt_id": attempt_id,
         "status": "calling",
         "dropped_variables": dropped,
+        "voice_note": voice_note,
+        "app_id": chosen_app_id,
         "raw": data,
     }

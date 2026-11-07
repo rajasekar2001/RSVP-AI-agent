@@ -30,3 +30,16 @@ Use "Preview what the phone agent will receive" in Build to see the exact text.
   cannot be changed per call by API. Tone and speed are applied as speaking-style
   instructions. Pick the voice once in Sarvam.
 - Language must be supported by the agent's voice/STT in Sarvam.
+
+## Male / Female voice (dashboard: Build -> Voice)
+A call's speaker is fixed by the Sarvam agent, so create the shell agent twice (same variables,
+greeting `@opening_message`, instructions `@call_instructions`) and set the speaker once:
+- Female agent: speaker `ishita`   - Male agent: speaker `shubh`   (both Bulbul v3; `varun` is male but dramatic)
+Commit each, then put them in .env:
+  SARVAM_APP_ID_FEMALE / SARVAM_APP_VERSION_FEMALE, SARVAM_APP_ID_MALE / SARVAM_APP_VERSION_MALE
+(version is optional; it falls back to SARVAM_APP_VERSION.) Choose Default / Female / Male in the
+dashboard and each call is placed with the matching agent. If the chosen one is not configured the
+default agent is used and the contact row shows a warning.
+Inbound call-backs use the voice of your inbound agent (set its speaker in Sarvam; add
+SARVAM_APP_ID_INBOUND to .env so inbound transcripts/recordings can be fetched).
+The instructions also tell the AI which grammatical gender to use (matters in Hindi/Tamil).

@@ -11,7 +11,15 @@
     "voice_speed": 1.5,
     "greeting": "Hello! I'm an AI assistant calling about our upcoming event. The event is on {date} at {time} at {venue}. Am I speaking with {name}?",
     "inbound_greeting": "Hello {name}! I called you earlier about the event on {date} at {time}, but you could not take the call. Are you free to talk now?",
-    "max_call_seconds": 50
+    "max_call_seconds": 50,
+    "retry_enabled": true,
+    "retry_interval_minutes": 60,
+    "retry_max_attempts": 5,
+    "retry_window_start": "09:00",
+    "retry_window_end": "20:00",
+    "voice_gender": "female",
+    "female_speaker": "ishita",
+    "male_speaker": "shubh"
   },
   "knowledge": [],
   "webhook": {
@@ -22,21 +30,14 @@
     {
       "name": "Raja",
       "phone": "+918903632050",
-      "status": "Failed",
+      "status": "Calling",
       "rsvp": "",
       "guests": "",
       "attempts": 1,
-      "attempt_id": "9855291e-f00d-449a-a3ee-86324c9e4f82",
-      "call_status": "failed",
-      "launch_warning": "Sarvam agent is missing variables: opening_message, call_instructions. Create them in the Sarvam agent.",
-      "interaction_id": "NO_INTERACTION_ID",
-      "duration": 0.0,
-      "failure_reason": "NO_FAILURE_REASON",
-      "processed_attempt_id": "9855291e-f00d-449a-a3ee-86324c9e4f82",
-      "call_ended_at": "2026-11-06T10:55:58.638988+00:00",
-      "reconciled_from": "sarvam_analytics",
-      "next_retry_at": "2026-11-06T17:25:58",
-      "retry_note": "Attempt 1 of 5 not answered. Next try about 06 Nov 17:25"
+      "attempt_id": "f168ac89-766b-4586-8ac8-c8566e5d7c0e",
+      "app_id": "RSVP-AI-Cal-b2a57724-378d",
+      "call_status": "calling",
+      "launch_warning": "Sarvam agent is missing variables: opening_message, call_instructions. Create them in the Sarvam agent."
     }
   ],
   "tests": [

@@ -82,6 +82,9 @@ async function refreshState() {
 function voicePrefs() {
     return {
         voice_language: $("#voiceLanguage")?.value || "",
+        voice_gender: $("#voiceGender") ? $("#voiceGender").value : undefined,
+        female_speaker: $("#femaleSpeaker") ? $("#femaleSpeaker").value.trim().toLowerCase() : undefined,
+        male_speaker: $("#maleSpeaker") ? $("#maleSpeaker").value.trim().toLowerCase() : undefined,
         voice_tone: $("#voiceTone")?.value || "normal",
         voice_speed: Number($("#voiceSpeed")?.value || 1),
         greeting: $("#greetingBox") ? $("#greetingBox").value : undefined,
@@ -98,6 +101,9 @@ function voicePrefs() {
 
 function syncVoicePrefs() {
     if ($("#voiceLanguage")) $("#voiceLanguage").value = state.agent?.voice_language || "";
+    if ($("#voiceGender")) $("#voiceGender").value = state.agent?.voice_gender || "";
+    if ($("#femaleSpeaker")) $("#femaleSpeaker").value = state.agent?.female_speaker || "ishita";
+    if ($("#maleSpeaker")) $("#maleSpeaker").value = state.agent?.male_speaker || "shubh";
     if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
     if ($("#greetingBox")) $("#greetingBox").value = state.agent?.greeting || "";
     if ($("#inboundGreetingBox")) $("#inboundGreetingBox").value = state.agent?.inbound_greeting || "";
@@ -302,12 +308,25 @@ function startListening() {
 
 // Pick a speech voice matching the chosen language. Never intentionally
 // fall back to Hindi when English (or another language) is selected.
+// Browsers do not expose a voice's gender, so match well-known voice names.
+const FEMALE_VOICE_HINT = /female|woman|zira|heera|hazel|susan|samantha|victoria|karen|moira|tessa|veena|raveena|priya|neerja|swara|aria|jenny|sonia|natasha|kalpana|lekha|shruti|pallavi|ananya|sapna|kavya|fiona/i;
+const MALE_VOICE_HINT = /\bmale\b|david|mark|george|james|richard|ravi|hemant|prabhat|guy|ryan|christopher|eric|alex|daniel|thomas|rishi|kalpesh|valluvar|madhur|prabhat|mohan|rajesh|abhijit/i;
+
 function chooseBrowserVoice(locale) {
     const voices = window.speechSynthesis?.getVoices() || [];
-    const exact = voices.find(v => v.lang.toLowerCase() === locale.toLowerCase());
-    if (exact) return exact;
     const base = locale.split("-")[0].toLowerCase();
-    return voices.find(v => v.lang.split("-")[0].toLowerCase() === base) || null;
+    const matching = [
+        ...voices.filter(v => v.lang.toLowerCase() === locale.toLowerCase()),
+        ...voices.filter(v => v.lang.toLowerCase() !== locale.toLowerCase() && v.lang.split("-")[0].toLowerCase() === base)
+    ];
+    const gender = voicePrefs().voice_gender || "";
+    if (gender && matching.length) {
+        const hint = gender === "female" ? FEMALE_VOICE_HINT : MALE_VOICE_HINT;
+        const other = gender === "female" ? MALE_VOICE_HINT : FEMALE_VOICE_HINT;
+        const wanted = matching.find(v => hint.test(v.name)) || matching.find(v => !other.test(v.name));
+        if (wanted) return wanted;
+    }
+    return matching[0] || null;
 }
 
 function speak(text, listenAfter = true, onFinished = null) {

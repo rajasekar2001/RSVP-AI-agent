@@ -52,6 +52,21 @@
             <select id="voiceLanguage" style="padding:9px;border-radius:8px;border:1px solid #ddd">
               <option value="">No selection (default)</option><option value="en-IN">English</option><option value="ta-IN">Tamil</option><option value="hi-IN">Hindi</option><option value="te-IN">Telugu</option><option value="ml-IN">Malayalam</option><option value="kn-IN">Kannada</option><option value="mr-IN">Marathi</option><option value="bn-IN">Bengali</option><option value="gu-IN">Gujarati</option><option value="pa-IN">Punjabi</option><option value="od-IN">Odia</option>
             </select>
+            <label for="voiceGender">Voice</label>
+            <select id="voiceGender" style="padding:9px;border-radius:8px;border:1px solid #ddd">
+              <option value="" {{ 'selected' if not state.agent.get('voice_gender') else '' }}>Default (the agent's own voice)</option>
+              <option value="female" {{ 'selected' if state.agent.get('voice_gender') == 'female' else '' }}>Female</option>
+              <option value="male" {{ 'selected' if state.agent.get('voice_gender') == 'male' else '' }}>Male</option>
+            </select>
+            <div style="display:flex;gap:14px;flex-wrap:wrap">
+              <div><label for="femaleSpeaker">Female voice (speaker name)</label>
+                <input id="femaleSpeaker" list="femaleSpeakers" value="{{ state.agent.get('female_speaker', 'ishita') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:170px"></div>
+              <div><label for="maleSpeaker">Male voice (speaker name)</label>
+                <input id="maleSpeaker" list="maleSpeakers" value="{{ state.agent.get('male_speaker', 'shubh') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:170px"></div>
+            </div>
+            <datalist id="femaleSpeakers"><option value="ishita"><option value="shreya"><option value="priya"><option value="ritu"><option value="pooja"><option value="simran"><option value="kavya"><option value="neha"><option value="roopa"><option value="tanya"><option value="shruti"><option value="suhani"></datalist>
+            <datalist id="maleSpeakers"><option value="shubh"><option value="aditya"><option value="rahul"><option value="rohan"><option value="amit"><option value="dev"><option value="ratan"><option value="manan"><option value="sumit"><option value="kabir"><option value="aayan"><option value="anand"></datalist>
+            <small>Pick Female or Male above: each outgoing call is sent with that speaker, so no extra Sarvam setup or .env values are needed. Type any other Sarvam speaker name (lowercase) to change the voice. Speaking speed is sent to Sarvam too. If Sarvam refuses a per-call voice, the contact row shows a warning and the agent's own voice is used. Incoming call-backs use the voice set on the inbound agent in Sarvam.</small>
             <label for="voiceTone">Tone</label>
             <select id="voiceTone" style="padding:9px;border-radius:8px;border:1px solid #ddd"><option value="normal">Normal</option><option value="friendly">Friendly</option><option value="professional">Professional</option><option value="calm">Calm</option></select>
             <label for="voiceSpeed">Speaking speed: <b id="voiceSpeedLabel">1.0×</b></label>

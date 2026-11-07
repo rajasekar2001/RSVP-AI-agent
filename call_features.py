@@ -40,6 +40,16 @@ LEGACY_INBOUND_PROMPT_V1 = (
 LEGACY_INBOUND_PROMPTS = {LEGACY_INBOUND_PROMPT_V1}
 
 
+def gender_text(gender):
+    """Grammar hint for languages with gendered verbs (Hindi, Tamil...). Empty = no preference."""
+    g = str(gender or "").lower()
+    if g == "female":
+        return "You are a female assistant: in gendered languages use feminine forms when speaking about yourself."
+    if g == "male":
+        return "You are a male assistant: in gendered languages use masculine forms when speaking about yourself."
+    return ""
+
+
 def time_limit_text(seconds):
     seconds = clamp_seconds(seconds)
     wrap = max(10, seconds - 15)

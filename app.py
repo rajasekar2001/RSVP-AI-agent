@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from pypdf import PdfReader
 from rsvp_parser import extract_rsvp_from_transcript
 import call_features as cf
-from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outbound
+from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outbound, voice_agents_configured
 
 load_dotenv()
 
@@ -65,6 +65,9 @@ DEFAULT_STATE = {
         "voice_language": "",
         "voice_tone": "normal",
         "voice_speed": 1.0,
+        "voice_gender": "",
+        "female_speaker": "ishita",
+        "male_speaker": "shubh",
         "built": True,
         "fixed_plus_ones": True,
     },
@@ -84,6 +87,7 @@ DEFAULT_STATE = {
 def public_state():
     """Do not expose sensitive call data on the existing public dashboard routes."""
     data = load_state()
+    data["voice_agents"] = voice_agents_configured()
     for c in data.get("contacts", []):
         for secret in ("transcript", "sarvam_variables", "recording_url"):
             c.pop(secret, None)
@@ -427,8 +431,11 @@ def start_real_contact_call(contact):
         current = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
         if current and current.get("status") == "Starting":
             current["attempt_id"] = result["attempt_id"]
+            current["app_id"] = result.get("app_id", "")
             current["status"] = "Calling"
             current["call_status"] = result.get("status", "calling")
+            if result.get("voice_note"):
+                current["launch_warning"] = result["voice_note"]
             if result.get("dropped_variables"):
                 current["launch_warning"] = (
                     "Sarvam agent is missing variables: "
@@ -546,6 +553,17 @@ async def build(request: Request):
     if any(k in data for k in cf.RETRY_DEFAULTS):
         merged = {**agent, **{k: data[k] for k in cf.RETRY_DEFAULTS if k in data}}
         agent.update(cf.retry_settings(merged))
+    for key, default in (("female_speaker", "ishita"), ("male_speaker", "shubh")):
+        if key in data:
+            name = str(data[key] or "").strip().lower() or default
+            if not re.fullmatch(r"[a-z][a-z0-9_]{1,30}", name):
+                raise HTTPException(status_code=400, detail="Speaker name must be lowercase letters, e.g. ishita or shubh")
+            agent[key] = name
+    if "voice_gender" in data:
+        value = str(data["voice_gender"] or "").strip().lower()
+        if value not in {"", "female", "male"}:
+            raise HTTPException(status_code=400, detail="Voice must be Default, Female or Male")
+        agent["voice_gender"] = value
     if "voice_tone" in data:
         value = str(data["voice_tone"] or "normal")
         if value not in {"normal", "friendly", "professional", "calm"}:
@@ -684,6 +702,16 @@ def render_greeting(template, name, subject, event_sentence, event_name, facts):
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+def _speaker_for(agent):
+    """Sarvam speaker for the dashboard's Male/Female choice ('' = keep the agent's own voice)."""
+    g = str(agent.get("voice_gender", "") or "").lower()
+    if g == "female":
+        return str(agent.get("female_speaker") or "ishita")
+    if g == "male":
+        return str(agent.get("male_speaker") or "shubh")
+    return ""
+
+
 def build_real_call_context(state, contact, attempt=1):
     """Everything the phone agent needs, built from the DASHBOARD settings and this CSV row only."""
     name = str(contact.get("name", "")).strip()
@@ -725,8 +753,12 @@ def build_real_call_context(state, contact, attempt=1):
         "identity_question": f"Am I speaking with {name}?",
         "opening_message": opening,
         "call_instructions": "\n\n".join(x for x in (
-            instructions, style, cf.time_limit_text(agent.get("max_call_seconds")), rules) if x),
+            instructions, style, cf.gender_text(agent.get("voice_gender")),
+            cf.time_limit_text(agent.get("max_call_seconds")), rules) if x),
         "language": str(agent.get("voice_language", "") or ""),
+        "voice_gender": str(agent.get("voice_gender", "") or ""),
+        "speaker_name": _speaker_for(agent),
+        "speech_pace": agent.get("voice_speed", 1.0),
     }
 
 
@@ -774,7 +806,7 @@ def build_inbound_context(state, contact):
     instructions = "\n\n".join(x for x in (
         fact_block,
         str(agent.get("inbound_prompt", "")).strip() or cf.DEFAULT_INBOUND_PROMPT,
-        caller, style, cf.time_limit_text(agent.get("max_call_seconds")),
+        caller, style, cf.gender_text(agent.get("voice_gender")), cf.time_limit_text(agent.get("max_call_seconds")),
         "Never invent names, dates, times or venues. Never mention other contacts.",
     ) if x)
     return {
@@ -786,6 +818,8 @@ def build_inbound_context(state, contact):
         "language": str(agent.get("voice_language", "") or ""),
         "known_caller": bool(contact),
         "scenario": scenario,
+        "speaker_name": _speaker_for(agent),
+        "speech_pace": agent.get("voice_speed", 1.0),
     }
 
 
@@ -1110,7 +1144,7 @@ async def call_transcript(attempt_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Call not found")
         rows, note = inbound.get("transcript") or [], ""
         if not rows:
-            rows, note = await asyncio.to_thread(fetch_transcript, inbound.get("interaction_id"))
+            rows, note = await asyncio.to_thread(fetch_transcript, inbound.get("interaction_id"), inbound.get("app_id", ""))
             if rows:
                 with STATE_LOCK:
                     state = load_state()
@@ -1142,7 +1176,7 @@ async def call_recording(attempt_id: str, request: Request):
     from sarvam_voice import SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID, SARVAM_WORKSPACE_ID, SARVAM_APP_ID
     url = (f"{SARVAM_API_BASE}/api/analytics/v1/"
            f"{quote(SARVAM_ORG_ID, safe='')}/{quote(SARVAM_WORKSPACE_ID, safe='')}/"
-           f"{quote(SARVAM_APP_ID, safe='')}/recordings/{quote(interaction_id, safe='')}")
+           f"{quote(contact.get('app_id') or SARVAM_APP_ID, safe='')}/recordings/{quote(interaction_id, safe='')}")
     try:
         result = await asyncio.to_thread(
             requests.get, url,
@@ -1395,7 +1429,7 @@ from datetime import timedelta, timezone
 RECONCILE_LOCK = threading.Lock()
 
 
-def _sarvam_attempt_from_analytics(attempt_id: str):
+def _sarvam_attempt_from_analytics(attempt_id: str, app_id: str = ""):
     from sarvam_voice import (
         SARVAM_API_BASE, SARVAM_API_KEY, SARVAM_ORG_ID,
         SARVAM_WORKSPACE_ID, SARVAM_APP_ID,
@@ -1404,7 +1438,7 @@ def _sarvam_attempt_from_analytics(attempt_id: str):
         f"{SARVAM_API_BASE}/api/analytics/v1/"
         f"{quote(SARVAM_ORG_ID, safe='')}/"
         f"{quote(SARVAM_WORKSPACE_ID, safe='')}/"
-        f"{quote(SARVAM_APP_ID, safe='')}/attempts"
+        f"{quote(app_id or SARVAM_APP_ID, safe='')}/attempts"
     )
     now = datetime.now(timezone.utc)
     params = {
@@ -1426,7 +1460,7 @@ def _sarvam_attempt_from_analytics(attempt_id: str):
     return None
 
 
-def fetch_transcript(interaction_id: str):
+def fetch_transcript(interaction_id: str, app_id: str = ""):
     """Fetch a call transcript straight from Sarvam Analytics.
 
     Returns (rows, error). rows use the same shape as the webhook transcript
@@ -1444,7 +1478,7 @@ def fetch_transcript(interaction_id: str):
         f"{SARVAM_API_BASE}/api/analytics/v1/"
         f"{quote(SARVAM_ORG_ID, safe='')}/"
         f"{quote(SARVAM_WORKSPACE_ID, safe='')}/"
-        f"{quote(SARVAM_APP_ID, safe='')}/transcripts/"
+        f"{quote(app_id or SARVAM_APP_ID, safe='')}/transcripts/"
         f"{quote(interaction_id, safe='')}"
     )
     try:
@@ -1488,7 +1522,7 @@ def ensure_transcript(attempt_id: str):
     if not rows and contact.get("call_status") in {"no_answer", "busy", "failed", "launch_failed"}:
         return [], "This call did not connect, so there is no transcript."
     if not rows:
-        rows, error = fetch_transcript(contact.get("interaction_id"))
+        rows, error = fetch_transcript(contact.get("interaction_id"), contact.get("app_id", ""))
     if rows:
         with STATE_LOCK:
             state = load_state()
@@ -1525,7 +1559,7 @@ def reconcile_one_call(attempt_id: str):
         if contact.get("status") not in {"Calling", "Starting", "Call ended"}:
             return {"attempt_id": attempt_id, "result": "already_final"}
 
-        item = _sarvam_attempt_from_analytics(attempt_id)
+        item = _sarvam_attempt_from_analytics(attempt_id, contact.get("app_id", ""))
         if not item:
             return {"attempt_id": attempt_id, "result": "not_yet_in_analytics"}
 
@@ -2380,6 +2414,7 @@ async def sarvam_inbound_webhook(request: Request):
         contact = cf.find_contact_by_phone(state, phone)
         call.update({
             "phone": phone, "agent_phone_number": payload.get("agent_phone_number", ""),
+            "app_id": str(payload.get("app_id") or os.getenv("SARVAM_APP_ID_INBOUND", "")).strip(),
             "name": (contact or {}).get("name", ""), "duration": payload.get("duration"),
             "start_datetime": payload.get("start_datetime", ""), "end_datetime": payload.get("end_datetime", ""),
         })
@@ -2401,7 +2436,7 @@ async def sarvam_inbound_webhook(request: Request):
         async def _later():
             for delay in (3, 15, 45, 120):
                 await asyncio.sleep(delay)
-                rows, _ = await asyncio.to_thread(fetch_transcript, interaction_id)
+                rows, _ = await asyncio.to_thread(fetch_transcript, interaction_id, call.get("app_id", ""))
                 if rows:
                     with STATE_LOCK:
                         st = load_state()
