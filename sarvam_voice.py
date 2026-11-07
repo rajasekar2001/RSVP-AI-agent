@@ -163,7 +163,7 @@ def get_sarvam_error(response):
     return str(error)[:500]
 
 
-def voice_agent(gender: str):
+def voice_agent(gender: str, agents=None):
     """Pick the Sarvam agent (and version) for the dashboard's Male/Female choice.
 
     A call's speaker voice is a property of the Sarvam agent version, so a male and a
@@ -172,14 +172,16 @@ def voice_agent(gender: str):
     configured and the default agent is used instead.
     """
     g = str(gender or "").strip().lower()
+    agents = agents or {}
     if g in {"male", "female"}:
         key = g.upper()
-        app_id = setting(f"SARVAM_APP_ID_{key}")
-        version = setting(f"SARVAM_APP_VERSION_{key}") or SARVAM_APP_VERSION
+        # Dashboard-entered agent wins; .env is only an optional fallback.
+        app_id = str(agents.get(f"{g}_app_id") or "").strip() or setting(f"SARVAM_APP_ID_{key}")
+        version = str(agents.get(f"{g}_app_version") or "").strip() or setting(f"SARVAM_APP_VERSION_{key}") or SARVAM_APP_VERSION
         if app_id and re.fullmatch(r"[1-9]\d*", str(version)):
             return app_id, str(version), ""
         return SARVAM_APP_ID, SARVAM_APP_VERSION, (
-            f"{g.title()} voice requested but SARVAM_APP_ID_{key} is not set: the default agent's voice was used."
+            f"{g.title()} voice needs a {g.title()} Sarvam agent: Sarvam cannot change the voice per call, so the default agent's voice was used. Paste the {g.title()} agent ID in the dashboard (Voice section)."
         )
     return SARVAM_APP_ID, SARVAM_APP_VERSION, ""
 
@@ -232,7 +234,16 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
             "?token=" + quote(SARVAM_WEBHOOK_TOKEN, safe="")
         )
 
-    chosen_app_id, chosen_version, voice_note = voice_agent((context or {}).get("voice_gender"))
+    context = context or {}
+    gender = str(context.get("voice_gender") or "").lower()
+    chosen_app_id, chosen_version, agent_note = voice_agent(gender, context)
+    # Dashboard Male/Female -> per-call speaker (text_to_speech_config override). A dedicated
+    # male/female agent in .env (advanced, optional) takes priority; no .env is needed otherwise.
+    dedicated_agent = bool(gender) and chosen_app_id != SARVAM_APP_ID
+    speaker = "" if dedicated_agent else str(context.get("speaker_name") or "").strip().lower()
+    if speaker and not re.fullmatch(r"[a-z][a-z0-9_]{1,30}", speaker):
+        speaker = ""
+    voice_note = agent_note
     app_config = {
         "app_id": chosen_app_id,
         "app_version": int(chosen_version),
@@ -264,6 +275,17 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
     language = locale_map.get(raw_lang.lower()) or raw_lang.title() or SARVAM_INITIAL_LANGUAGE.strip().title()
     if language.lower() in SARVAM_LANGUAGES:
         overrides["initial_language_name"] = language
+    tts = {}
+    if speaker:
+        tts["speaker_name"] = speaker
+    try:
+        pace = float(context.get("speech_pace") or 0)
+    except (TypeError, ValueError):
+        pace = 0.0
+    if pace and abs(pace - 1.0) > 0.01:
+        tts["speech_settings"] = {"pace": round(max(0.85, min(2.0, pace)), 2)}
+    if tts:
+        overrides["text_to_speech_config"] = tts
     if overrides:
         app_config["app_overrides"] = overrides
 
@@ -286,10 +308,11 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
     # Never log secret API credentials.
     logger.warning(
         "Starting Sarvam RSVP call: "
-        "app_id=%s version=%s voice=%s contact=%s",
+        "app_id=%s version=%s voice=%s speaker=%s contact=%s",
         chosen_app_id,
         chosen_version,
         (context or {}).get("voice_gender") or "default",
+        speaker or "agent-default",
         contact_name,
     )
 
@@ -335,6 +358,20 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
                     dropped,
                 )
                 response = _post()
+
+    # If Sarvam refuses the per-call voice override, place the call with the agent's own voice
+    # (and say so) instead of failing it.
+    if response.status_code in (400, 422) and "text_to_speech_config" in app_config.get("app_overrides", {}):
+        message = get_sarvam_error(response)
+        if re.search(r"text_to_speech|speaker|speech_settings|app_overrides|extra|unexpected|not permitted|unrecognized|unknown",
+                     message, re.I):
+            app_config["app_overrides"].pop("text_to_speech_config", None)
+            if not app_config["app_overrides"]:
+                app_config.pop("app_overrides")
+            voice_note = ("Sarvam did not accept a per-call voice (" + message[:120] + "): the agent's own voice was used. "
+                          "Set the voice in the Sarvam agent, or add SARVAM_APP_ID_FEMALE / SARVAM_APP_ID_MALE agents.")
+            logger.warning("Per-call voice rejected by Sarvam; retrying with the agent's voice. %s", message[:200])
+            response = _post()
 
     if not response.ok:
         raise RuntimeError(

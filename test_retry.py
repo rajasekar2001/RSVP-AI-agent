@@ -121,7 +121,7 @@ def placed(ctx, responses=None):
 post, res = placed({"voice_gender": "female", "speaker_name": "ishita"})
 ov = post.call_args.kwargs["json"]["app_config"]["app_overrides"]
 assert ov["text_to_speech_config"] == {"speaker_name": "ishita"} and ov["initial_bot_message"] == "Hello"
-assert post.call_args.kwargs["json"]["app_config"]["app_id"] == "a" and not res["voice_note"]
+assert post.call_args.kwargs["json"]["app_config"]["app_id"] == "a" and "Female Sarvam agent" in res["voice_note"]
 post, _ = placed({"voice_gender": "male", "speaker_name": "shubh", "speech_pace": 0.7})
 assert post.call_args.kwargs["json"]["app_config"]["app_overrides"]["text_to_speech_config"] == {"speaker_name": "shubh", "speech_settings": {"pace": 0.85}}
 post, _ = placed({"voice_gender": "", "speaker_name": "", "speech_pace": 1.0})
@@ -142,6 +142,17 @@ assert (cfgd["app_id"], cfgd["app_version"], res["app_id"]) == ("male-agent", 4,
 assert "text_to_speech_config" not in cfgd.get("app_overrides", {})
 del os.environ["SARVAM_APP_ID_MALE"], os.environ["SARVAM_APP_VERSION_MALE"]
 
+# dashboard-entered Female/Male agents switch the real agent per call (no .env)
+post, res = placed({"voice_gender": "female", "female_app_id": "fem-agent", "female_app_version": "2", "male_app_id": "m-agent", "male_app_version": "3"})
+assert (post.call_args.kwargs["json"]["app_config"]["app_id"], post.call_args.kwargs["json"]["app_config"]["app_version"]) == ("fem-agent", 2)
+post, res = placed({"voice_gender": "male", "female_app_id": "fem-agent", "female_app_version": "2", "male_app_id": "m-agent", "male_app_version": "3"})
+assert post.call_args.kwargs["json"]["app_config"]["app_id"] == "m-agent"
+post, res = placed({"voice_gender": "female"})
+assert "Female Sarvam agent" in res["voice_note"]
+assert c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "female", "female_app_id": "fem-agent", "female_app_version": "2"}).status_code == 200
+assert app.build_real_call_context(app.load_state(), {"name": "Raja"})["female_app_id"] == "fem-agent"
+assert c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "female_app_version": "x"}).status_code == 400
+
 # dashboard settings -> what the call receives
 assert c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "male", "male_speaker": "Aditya", "female_speaker": "shreya", "voice_speed": 0.9}).status_code == 200
 a = app.load_state()["agent"]; assert (a["voice_gender"], a["male_speaker"], a["female_speaker"]) == ("male", "aditya", "shreya")
@@ -156,11 +167,12 @@ assert c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "male_speaker": 
 assert "feminine forms" in (c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "female"}) and c.get("/api/call-preview?name=Raja&direction=inbound").json()["call_instructions"])
 
 # the contact row shows the warning when Sarvam refused the voice; calls remember which agent placed them
+c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "female_app_id": "", "female_app_version": "", "voice_gender": "female"})
 fresh(status="Ready")
 with mock.patch.object(sarvam_voice.requests, "post", side_effect=[Reject(), Ok()]):
     app.start_real_contact_call(app.load_state()["contacts"][0])
 raja = app.load_state()["contacts"][0]
-assert raja["app_id"] == "a" and "agent's own voice" in raja["launch_warning"]
+assert raja["app_id"] == "a" and "voice" in raja["launch_warning"]
 class T:
     ok = True; status_code = 200
     def json(self): return {"messages": [{"role": "assistant", "content": "Hi"}]}

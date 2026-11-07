@@ -559,6 +559,17 @@ async def build(request: Request):
             if not re.fullmatch(r"[a-z][a-z0-9_]{1,30}", name):
                 raise HTTPException(status_code=400, detail="Speaker name must be lowercase letters, e.g. ishita or shubh")
             agent[key] = name
+    for g in ("female", "male"):
+        if f"{g}_app_id" in data:
+            v = str(data[f"{g}_app_id"] or "").strip()
+            if v and not re.fullmatch(r"[A-Za-z0-9_.\-]{3,100}", v):
+                raise HTTPException(status_code=400, detail=f"{g.title()} agent ID looks invalid")
+            agent[f"{g}_app_id"] = v
+        if f"{g}_app_version" in data:
+            v = str(data[f"{g}_app_version"] or "").strip()
+            if v and not re.fullmatch(r"[1-9]\d{0,5}", v):
+                raise HTTPException(status_code=400, detail=f"{g.title()} agent version must be a number")
+            agent[f"{g}_app_version"] = v
     if "voice_gender" in data:
         value = str(data["voice_gender"] or "").strip().lower()
         if value not in {"", "female", "male"}:
@@ -759,6 +770,10 @@ def build_real_call_context(state, contact, attempt=1):
         "voice_gender": str(agent.get("voice_gender", "") or ""),
         "speaker_name": _speaker_for(agent),
         "speech_pace": agent.get("voice_speed", 1.0),
+        "female_app_id": agent.get("female_app_id", ""),
+        "female_app_version": agent.get("female_app_version", ""),
+        "male_app_id": agent.get("male_app_id", ""),
+        "male_app_version": agent.get("male_app_version", ""),
     }
 
 
@@ -820,6 +835,10 @@ def build_inbound_context(state, contact):
         "scenario": scenario,
         "speaker_name": _speaker_for(agent),
         "speech_pace": agent.get("voice_speed", 1.0),
+        "female_app_id": agent.get("female_app_id", ""),
+        "female_app_version": agent.get("female_app_version", ""),
+        "male_app_id": agent.get("male_app_id", ""),
+        "male_app_version": agent.get("male_app_version", ""),
     }
 
 

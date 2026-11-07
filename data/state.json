@@ -30,14 +30,31 @@
     {
       "name": "Raja",
       "phone": "+918903632050",
-      "status": "Calling",
+      "status": "Call ended",
       "rsvp": "",
       "guests": "",
       "attempts": 1,
       "attempt_id": "f168ac89-766b-4586-8ac8-c8566e5d7c0e",
       "app_id": "RSVP-AI-Cal-b2a57724-378d",
-      "call_status": "calling",
-      "launch_warning": "Sarvam agent is missing variables: opening_message, call_instructions. Create them in the Sarvam agent."
+      "call_status": "connected",
+      "launch_warning": "Sarvam agent is missing variables: opening_message, call_instructions. Create them in the Sarvam agent.",
+      "interaction_id": "20261107/1be2283a-08:55:01-646d3462",
+      "duration": 7.71591854095459,
+      "failure_reason": "NO_FAILURE_REASON",
+      "transcript": [
+        {
+          "role": "agent",
+          "en_text": "Hello! I'm an AI assistant calling on behalf of the event organiser to confirm your attendance for Saturday's event. Will you be attending?",
+          "language": "English"
+        }
+      ],
+      "sarvam_variables": {
+        "user_name": "Manan"
+      },
+      "result_status": "RSVP not received — awaiting extraction",
+      "processed_attempt_id": "f168ac89-766b-4586-8ac8-c8566e5d7c0e",
+      "call_ended_at": "2026-11-07T03:25:01",
+      "reconciled_from": "sarvam_analytics"
     }
   ],
   "tests": [

@@ -83,8 +83,10 @@ function voicePrefs() {
     return {
         voice_language: $("#voiceLanguage")?.value || "",
         voice_gender: $("#voiceGender") ? $("#voiceGender").value : undefined,
-        female_speaker: $("#femaleSpeaker") ? $("#femaleSpeaker").value.trim().toLowerCase() : undefined,
-        male_speaker: $("#maleSpeaker") ? $("#maleSpeaker").value.trim().toLowerCase() : undefined,
+        female_app_id: $("#femaleAppId") ? $("#femaleAppId").value.trim() : undefined,
+        female_app_version: $("#femaleAppVersion") ? $("#femaleAppVersion").value.trim() : undefined,
+        male_app_id: $("#maleAppId") ? $("#maleAppId").value.trim() : undefined,
+        male_app_version: $("#maleAppVersion") ? $("#maleAppVersion").value.trim() : undefined,
         voice_tone: $("#voiceTone")?.value || "normal",
         voice_speed: Number($("#voiceSpeed")?.value || 1),
         greeting: $("#greetingBox") ? $("#greetingBox").value : undefined,
@@ -102,8 +104,10 @@ function voicePrefs() {
 function syncVoicePrefs() {
     if ($("#voiceLanguage")) $("#voiceLanguage").value = state.agent?.voice_language || "";
     if ($("#voiceGender")) $("#voiceGender").value = state.agent?.voice_gender || "";
-    if ($("#femaleSpeaker")) $("#femaleSpeaker").value = state.agent?.female_speaker || "ishita";
-    if ($("#maleSpeaker")) $("#maleSpeaker").value = state.agent?.male_speaker || "shubh";
+    if ($("#femaleAppId")) $("#femaleAppId").value = state.agent?.female_app_id || "";
+    if ($("#femaleAppVersion")) $("#femaleAppVersion").value = state.agent?.female_app_version || "";
+    if ($("#maleAppId")) $("#maleAppId").value = state.agent?.male_app_id || "";
+    if ($("#maleAppVersion")) $("#maleAppVersion").value = state.agent?.male_app_version || "";
     if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
     if ($("#greetingBox")) $("#greetingBox").value = state.agent?.greeting || "";
     if ($("#inboundGreetingBox")) $("#inboundGreetingBox").value = state.agent?.inbound_greeting || "";

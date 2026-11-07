@@ -59,14 +59,16 @@
               <option value="male" {{ 'selected' if state.agent.get('voice_gender') == 'male' else '' }}>Male</option>
             </select>
             <div style="display:flex;gap:14px;flex-wrap:wrap">
-              <div><label for="femaleSpeaker">Female voice (speaker name)</label>
-                <input id="femaleSpeaker" list="femaleSpeakers" value="{{ state.agent.get('female_speaker', 'ishita') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:170px"></div>
-              <div><label for="maleSpeaker">Male voice (speaker name)</label>
-                <input id="maleSpeaker" list="maleSpeakers" value="{{ state.agent.get('male_speaker', 'shubh') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:170px"></div>
+              <div><label for="femaleAppId">Female agent ID (Sarvam)</label>
+                <input id="femaleAppId" placeholder="RSVP-Female-xxxx" value="{{ state.agent.get('female_app_id', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:230px"></div>
+              <div><label for="femaleAppVersion">Version</label>
+                <input id="femaleAppVersion" placeholder="1" value="{{ state.agent.get('female_app_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:70px"></div>
+              <div><label for="maleAppId">Male agent ID (Sarvam)</label>
+                <input id="maleAppId" placeholder="RSVP-Male-xxxx" value="{{ state.agent.get('male_app_id', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:230px"></div>
+              <div><label for="maleAppVersion">Version</label>
+                <input id="maleAppVersion" placeholder="1" value="{{ state.agent.get('male_app_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:70px"></div>
             </div>
-            <datalist id="femaleSpeakers"><option value="ishita"><option value="shreya"><option value="priya"><option value="ritu"><option value="pooja"><option value="simran"><option value="kavya"><option value="neha"><option value="roopa"><option value="tanya"><option value="shruti"><option value="suhani"></datalist>
-            <datalist id="maleSpeakers"><option value="shubh"><option value="aditya"><option value="rahul"><option value="rohan"><option value="amit"><option value="dev"><option value="ratan"><option value="manan"><option value="sumit"><option value="kabir"><option value="aayan"><option value="anand"></datalist>
-            <small>Pick Female or Male above: each outgoing call is sent with that speaker, so no extra Sarvam setup or .env values are needed. Type any other Sarvam speaker name (lowercase) to change the voice. Speaking speed is sent to Sarvam too. If Sarvam refuses a per-call voice, the contact row shows a warning and the agent's own voice is used. Incoming call-backs use the voice set on the inbound agent in Sarvam.</small>
+            <small><b>Why two agents:</b> Sarvam fixes the voice inside each agent and its call API has no per-call voice option. Create the agent twice in Sarvam (copy the same shell, set voice Ishita/female in one and Shubh/male in the other, commit each), paste both IDs here, and this Voice dropdown switches the call between them. Nothing goes in .env. If the chosen gender has no agent here, the contact row shows a warning and the default agent's voice is used.</small>
             <label for="voiceTone">Tone</label>
             <select id="voiceTone" style="padding:9px;border-radius:8px;border:1px solid #ddd"><option value="normal">Normal</option><option value="friendly">Friendly</option><option value="professional">Professional</option><option value="calm">Calm</option></select>
             <label for="voiceSpeed">Speaking speed: <b id="voiceSpeedLabel">1.0×</b></label>
