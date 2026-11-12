@@ -76,3 +76,12 @@ person answers, gives an RSVP, calls the AI back, or the max attempts is reached
 the "Missed-call greeting": "Hello {name}! ... I called you earlier but you were not able to take the call.
 Are you free to talk now?" Retries start after you press Real Campaign once, and need the app
 (and its public URL) to stay running.
+
+## Call again / call back when the person answered but gave no RSVP
+- Dashboard > Call limits: tick **Also call again when the person answered but the call ended without an RSVP**.
+  A call that connects but ends with "Awaiting RSVP result" is retried after the retry delay (default 1 hour), inside the
+  allowed calling hours, up to the max attempts. The retry opens with: "Our earlier call got cut off before I could note
+  your RSVP. Do you have a minute to continue?"
+- When that person calls the AI back, it uses the same "cut off" greeting and continues with attendance, guests and names.
+  If the call-back records an RSVP the automatic retries stop; if not, the next automatic call stays scheduled.
+- Preview all call-back wordings in the dashboard (missed-call, cut off, already answered, unknown number).

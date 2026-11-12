@@ -20,8 +20,9 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pypdf import PdfReader
-from rsvp_parser import extract_rsvp_from_transcript
+from rsvp_parser import extract_rsvp_from_transcript, _is_agent as rsvp_is_agent
 import call_features as cf
+import contact_import
 from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outbound, voice_agents_configured
 
 load_dotenv()
@@ -359,12 +360,39 @@ def extract_sarvam_rsvp(final_vars):
     return rsvp, guests
 
 
+def check_greeting_used(contact):
+    """Flag calls where the AI's first sentence is not the dashboard greeting that was sent.
+    That means Sarvam spoke its own greeting (agent not set to @opening_message, or the
+    version in the dashboard is not the committed one)."""
+    sent = str(contact.get("sent_greeting") or "").strip().lower()
+    rows = contact.get("transcript") or []
+    if not sent or not rows or "greeting_check" in contact:
+        return
+    first = next((str((r.get("text") or r.get("content") or r.get("message") or "")).strip().lower()
+                  for r in rows if isinstance(r, dict) and rsvp_is_agent(r)), "")
+    if not first:
+        return
+    if sum(ch.isascii() for ch in first) < 0.8 * len(first):
+        return  # spoken in another script (translated greeting): cannot compare reliably
+    words = lambda t: {w for w in re.findall(r"[a-z0-9']+", t) if len(w) >= 3}
+    want, got = words(sent), words(first)
+    overlap = len(want & got) / max(1, len(want))
+    contact["greeting_check"] = "ok" if overlap >= 0.7 else "mismatch"
+    if contact["greeting_check"] == "mismatch":
+        contact["launch_warning"] = (
+            "The AI's first words were not your dashboard greeting: \"" + first[:110] + "\". "
+            "In Sarvam set this agent's Greeting to @opening_message and Instructions to @call_instructions, "
+            "Commit, and paste that committed version number in the dashboard."
+        )
+
+
 def apply_transcript_rsvp(contact):
     """Fill RSVP/guests from the call transcript when Sarvam sent no output variables.
 
     Returns True when the contact was updated. Never overrides an RSVP that already came
     from Sarvam's output variables.
     """
+    check_greeting_used(contact)
     if contact.get("rsvp") or not contact.get("transcript"):
         return False
     found = extract_rsvp_from_transcript(contact["transcript"])
@@ -432,6 +460,9 @@ def start_real_contact_call(contact):
         if current and current.get("status") == "Starting":
             current["attempt_id"] = result["attempt_id"]
             current["app_id"] = result.get("app_id", "")
+            current["sent_summary"] = result.get("sent_summary", "")
+            current["sent_greeting"] = str(call_context.get("opening_message") or "")[:600]
+            current.pop("launch_warning", None)
             current["status"] = "Calling"
             current["call_status"] = result.get("status", "calling")
             if result.get("voice_note"):
@@ -453,13 +484,15 @@ def schedule_retry(contact, state):
     if contact.get("status") not in cf.RETRYABLE_STATUSES or contact.get("rsvp"):
         return
     attempts = int(contact.get("attempts") or 1)
+    cut = cf.incomplete_call(contact)
     if cf.should_retry(contact, settings):
         due = datetime.now() + timedelta(minutes=settings["retry_interval_minutes"])
         contact["next_retry_at"] = due.isoformat(timespec="seconds")
-        contact["retry_note"] = (f"Attempt {attempts} of {settings['retry_max_attempts']} not answered. "
+        what = "ended before the RSVP was recorded" if cut else "not answered"
+        contact["retry_note"] = (f"Attempt {attempts} of {settings['retry_max_attempts']} {what}. "
                                  f"Next try about {due.strftime('%d %b %H:%M')}")
     elif settings["retry_enabled"] and attempts >= settings["retry_max_attempts"] \
-            and contact.get("call_status") in cf.RETRYABLE_CALL_STATUSES:
+            and (cut or contact.get("call_status") in cf.RETRYABLE_CALL_STATUSES):
         contact["retry_note"] = f"Gave up after {attempts} attempts"
 
 
@@ -498,9 +531,29 @@ async def _retry_scheduler():
 
 
 def start_next_real_call():
+    """Continue the campaign with the next Ready contact - but ONLY while a campaign was started
+    with the "☎ Real Campaign" button. Uploading contacts, adding one, or an incoming-call webhook
+    never starts calls by itself."""
     state = load_state()
+    if not state.get("campaign_started"):
+        return None
     contact = get_next_real_contact(state)
-    return start_real_contact_call(contact) if contact else None
+    if contact:
+        return start_real_contact_call(contact)
+    # Nothing left to call: end the campaign unless an unanswered call is still waiting for a retry.
+    settings = cf.retry_settings(state.get("agent"))
+    waiting = any(
+        c.get("status") in {"Starting", "Calling", "Queued"}
+        or (settings["retry_enabled"] and c.get("status") in cf.RETRYABLE_STATUSES
+            and int(c.get("attempts") or 1) < settings["retry_max_attempts"])
+        for c in state.get("contacts", [])
+    )
+    if not waiting:
+        with STATE_LOCK:
+            state = load_state()
+            state["campaign_started"] = False
+            save_state(state)
+    return None
 
 
 async def start_next_real_call_after_delay(delay=2):
@@ -709,7 +762,12 @@ def render_greeting(template, name, subject, event_sentence, event_name, facts):
         "time": data.get("time", ""),
         "venue": data.get("venue") or data.get("location", ""),
     }
+    for key in ("date", "time", "venue"):
+        if not values[key]:  # drop "on {date}" / "at {time}" / "at {venue}" together with the empty value
+            template = re.sub(r"(?i)\b(?:on|at|in)\s+\{" + key + r"\}", "", template)
     text = re.sub(r"\{(\w+)\}", lambda m: values.get(m.group(1), m.group(0)), template)
+    text = re.sub(r"(?i)\bThe event is\s*(?=[.!?])", "The event is coming up", text)
+    text = re.sub(r"\s+([.,!?])", r"\1", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
@@ -731,7 +789,11 @@ def build_real_call_context(state, contact, attempt=1):
     agent = state.get("agent", {})
     subject, event_sentence, event_name = _spoken_event_sentence(state)
     _, facts = intro_event_details(state)
-    if attempt > 1:
+    cut_off = attempt > 1 and cf.incomplete_call(contact)
+    if cut_off:
+        # Earlier call connected but ended before the RSVP was noted.
+        template = cf.inbound_cutoff_greeting()
+    elif attempt > 1:
         # Automatic retry after a missed call: same wording as the incoming call-back greeting.
         template = str(agent.get("inbound_greeting", "")).strip() or cf.inbound_default_greeting()
     else:
@@ -751,7 +813,14 @@ def build_real_call_context(state, contact, attempt=1):
         "question is NOT an attendance answer. Never invent names, dates, times or venues. "
         "Never mention other contacts."
     )
-    if attempt > 1:
+    if cut_off:
+        rules += (
+            f" This is call attempt {attempt}: we already spoke with {name} but the call ended before their RSVP was noted. "
+            "The opening line already said so and asked if they can continue. If they are busy, say: No problem, we will call "
+            "you again later. Thank you. Then end the call. Otherwise do not introduce yourself again; go straight to asking "
+            "whether they will attend and continue with the normal steps."
+        )
+    elif attempt > 1:
         rules += (
             f" This is call attempt {attempt}: we called {name} before and could not connect. The opening line already asked "
             "whether they are free to talk. If they say they are busy or not free, say: No problem, we will call you again "
@@ -783,6 +852,8 @@ def inbound_scenario(contact):
         return "unknown"
     if contact.get("rsvp") and contact.get("status") == "Completed":
         return "answered"
+    if cf.incomplete_call(contact):
+        return "cutoff"
     return "missed"
 
 
@@ -796,6 +867,8 @@ def build_inbound_context(state, contact):
     if scenario == "missed":
         # editable in the dashboard: the main "I called you but you could not attend - are you free now?" line
         template = str(agent.get("inbound_greeting", "")).strip() or cf.inbound_default_greeting()
+    elif scenario == "cutoff":
+        template = cf.inbound_cutoff_greeting()
     elif scenario == "answered":
         template = cf.inbound_answered_greeting()
     else:
@@ -803,7 +876,11 @@ def build_inbound_context(state, contact):
     template = template.replace("{event_intro}", subject)
     opening = render_greeting(template, name or "there", subject, event_sentence, event_name, facts)
 
-    if scenario == "missed":
+    if scenario == "cutoff":
+        caller = (f"The caller is {name}, from our invite list (their number matched). We already spoke earlier but the call "
+                  "ended before their RSVP was noted. Do not ask who they are. If they are free, confirm whether they will "
+                  "attend, and if yes how many additional guests and their names, then repeat the details and confirm.")
+    elif scenario == "missed":
         caller = (f"The caller is {name}, from our invite list (their number matched). We called them earlier but could not "
                   "connect, and no RSVP is recorded yet. Do not ask who they are.")
     elif scenario == "answered":
@@ -850,6 +927,8 @@ async def call_preview(name: str = "Raja", direction: str = "outbound", scenario
         fake = None if scenario == "unknown" else {"name": name or "Raja"}
         if fake and scenario == "answered":
             fake.update(rsvp="Yes", guests="", status="Completed")
+        elif fake and scenario == "cutoff":
+            fake.update(status="Call ended", call_status="connected")
         ctx = build_inbound_context(state, fake)
     else:
         ctx = build_real_call_context(state, {"name": name or "Raja"})
@@ -926,63 +1005,100 @@ async def set_webhook(request: Request):
     return {"ok": True, "webhook": state["webhook"]}
 
 
+def _new_contact(name, phone):
+    return {"name": name, "phone": phone, "status": "Ready", "rsvp": "", "guests": ""}
+
+
+def _replace_contacts(state, incoming):
+    """Upload = a new list. Contacts from the file replace everything that was there.
+    Earlier results are kept in state["past_calls"]. Returns (loaded, removed)."""
+    old = state.get("contacts", [])
+    past = state.setdefault("past_calls", [])
+    past.extend(dict(c) for c in old if c.get("rsvp") or c.get("call_status") or c.get("transcript"))
+    del past[:-500]
+    fresh, seen = [], set()
+    for item in incoming:
+        key = cf.digits(item["phone"])
+        if key in seen:
+            continue  # same number twice in the file
+        seen.add(key)
+        fresh.append(_new_contact(item["name"], item["phone"]))
+    state["contacts"] = fresh
+    state["campaign_started"] = False  # a new list never starts calling until "☎ Real Campaign" is clicked
+    return len(fresh), len(old)
+
+
 @app.post("/api/contacts")
 async def contacts(file: UploadFile = File(...)):
-    filename = (file.filename or "").lower()
-
-    if not filename.endswith(".csv"):
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a CSV file."
-        )
-
+    """Import contacts from almost any file type (csv, excel, ods, json, docx, pdf, vcf, txt ...).
+    The uploaded contacts REPLACE the current list."""
     raw = await file.read()
-
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="File exceeds 8 MB."
-        )
-
+        raise HTTPException(status_code=413, detail="File exceeds 8 MB.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="The file is empty.")
     try:
-        text = raw.decode("utf-8-sig")
-        rows = csv.DictReader(io.StringIO(text))
-
-        parsed = []
-
-        for row in rows:
-            name = (row.get("name") or "").strip()
-            phone = (row.get("phone") or "").strip()
-
-            if name and phone:
-                parsed.append({
-                    "name": name,
-                    "phone": phone,
-                    "status": "Ready",
-                    "rsvp": "",
-                    "guests": ""
-                })
-
-        if not parsed:
-            raise HTTPException(
-                status_code=400,
-                detail="CSV must contain name and phone columns."
-            )
-
+        parsed = contact_import.parse_contacts(file.filename or "", raw)
+    except contact_import.ImportError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    with STATE_LOCK:
         state = load_state()
-        state["contacts"] = parsed
+        added, removed = _replace_contacts(state, parsed["contacts"][:5000])
+        refreshed = busy = 0
         save_state(state)
+        total = len(state["contacts"])
+    return {
+        "ok": True,
+        "count": added + refreshed,
+        "added": added,
+        "refreshed": 0,
+        "busy": 0,
+        "removed": removed,
+        "skipped": len(parsed["skipped"]),
+        "skipped_examples": parsed["skipped"][:5],
+        "format": parsed["format"],
+        "total": total,
+    }
 
-        return {
-            "ok": True,
-            "count": len(parsed)
-        }
 
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="CSV must use UTF-8 encoding."
-        )
+@app.post("/api/contacts/add")
+async def add_contact(request: Request):
+    """Add one contact typed in the dashboard."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Send JSON with name and phone.")
+    try:
+        name, phone = contact_import.validate_contact(body.get("name"), body.get("phone"))
+    except contact_import.ImportError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    with STATE_LOCK:
+        state = load_state()
+        existing = cf.find_contact_by_phone(state, phone)
+        if existing:
+            raise HTTPException(status_code=409, detail=f"{existing.get('name')} already has this number.")
+        state["contacts"].append(_new_contact(name, phone))
+        save_state(state)
+        total = len(state["contacts"])
+    return {"ok": True, "name": name, "phone": phone, "total": total}
+
+
+@app.post("/api/contacts/remove")
+async def remove_contact(request: Request):
+    """Remove a contact that has not been called yet (status Ready)."""
+    body = await request.json()
+    phone = str(body.get("phone") or "")
+    with STATE_LOCK:
+        state = load_state()
+        found = cf.find_contact_by_phone(state, phone)
+        if not found:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        if found.get("status") not in {"Ready", "Failed"}:
+            raise HTTPException(status_code=409, detail="Only contacts that are not in a call can be removed.")
+        state["contacts"].remove(found)
+        save_state(state)
+    return {"ok": True, "total": len(state["contacts"])}
+
 
 # @app.post("/api/contacts")
 # async def contacts(file: UploadFile = File(...)):
@@ -1701,14 +1817,21 @@ def intro_event_details(state):
     # Structured event details can be written into the Instructions box as:
     # Event name: ... / Event time: ... / Event venue: ... / Event date: ...
     combined = prompt + "\n" + knowledge_text(state)
-    for key, display in (("event name", "Event"), ("event date", "Date"),
-                         ("event time", "Time"), ("event venue", "Venue"),
-                         ("event location", "Location")):
-        match = re.search(rf"(?im)^\s*{re.escape(key)}\s*:\s*([^\r\n]+)", combined)
+    for pattern, display in ((r"(?:event\s+)?name", "Event"), (r"(?:event\s+)?(?:date|day)", "Date"),
+                             (r"(?:event\s+)?time", "Time"), (r"(?:event\s+)?(?:venue|place)", "Venue"),
+                             (r"(?:event\s+)?location", "Location")):
+        match = re.search(rf"(?im)^\s*{pattern}\s*[:=-]\s*([^\r\n]+)", combined)
         if match:
             val = match.group(1).strip()[:160]
             if val and val.lower() not in ("tbd", "unknown", "n/a"):
                 facts.append(f"{display}: {val}")
+    have = {f.partition(":")[0].lower() for f in facts}
+    if "date" not in have and day:
+        facts.append(f"Date: {day.group(1).capitalize()}")
+    if "time" not in have:
+        t = re.search(r"\b(\d{1,2}(?::\d{2})?\s?(?:AM|PM|am|pm))\b", combined)
+        if t:
+            facts.append(f"Time: {t.group(1).upper().replace('  ', ' ')}")
     return label, facts
 
 
@@ -2443,10 +2566,13 @@ async def sarvam_inbound_webhook(request: Request):
         if isinstance(final_vars, dict) and final_vars:
             call["sarvam_variables"] = final_vars
         apply_inbound_result(state, call)
-        if contact:  # they called us back: stop chasing them with automatic retries
-            contact.pop("next_retry_at", None)
+        if contact:
             contact["last_inbound_at"] = call.get("start_datetime") or datetime.now().isoformat(timespec="seconds")
-            contact["retry_note"] = "They called back - automatic retries stopped"
+            if contact.get("rsvp"):  # they called back and gave their RSVP: no more automatic calls
+                contact.pop("next_retry_at", None)
+                contact["retry_note"] = "They called back - RSVP recorded, automatic retries stopped"
+            else:  # they called back but the RSVP is still missing: keep the next automatic call scheduled
+                contact["retry_note"] = (contact.get("retry_note") or "") + " · They called back but no RSVP was recorded"
         state["inbound_calls"] = state["inbound_calls"][-500:]
         save_state(state)
     _note_diag("webhook_ok", interaction_id=interaction_id)

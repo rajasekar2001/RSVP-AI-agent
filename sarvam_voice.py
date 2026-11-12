@@ -347,6 +347,17 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
                 n for n in re.findall(r"'(\w+)'", message.split("not found")[0])
                 if n in app_config["agent_variables"]
             ]
+            core = [n for n in dropped if n in {"call_instructions", "opening_message"}]
+            if core and setting("SARVAM_ALLOW_DROPPED_VARIABLES", "false").lower() not in {"1", "true", "yes"}:
+                # Placing the call anyway would make the AI read the Sarvam agent's own script
+                # instead of the greeting/instructions typed in the dashboard.
+                raise RuntimeError(
+                    "Call NOT placed: Sarvam agent '" + str(app_config.get("app_id")) + "' has no input variable "
+                    + ", ".join(core) + ", so it would ignore the greeting/instructions from your dashboard. "
+                    "In Sarvam open that agent: add input variables call_instructions and opening_message "
+                    "(Send to LLM = ON), set Greeting = @opening_message and Instructions = @call_instructions, "
+                    "then Commit and paste the new version number in the dashboard."
+                )
             if dropped:
                 for name in dropped:
                     app_config["agent_variables"].pop(name, None)
@@ -404,7 +415,17 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
         chosen_version,
     )
 
+    sent_vars = sorted(app_config.get("agent_variables", {}))
+    sent_summary = (
+        f"agent {chosen_app_id} v{chosen_version}; variables: {', '.join(sent_vars) or 'none'}; "
+        f"greeting override: {'yes' if 'initial_bot_message' in app_config.get('app_overrides', {}) else 'no'}; "
+        f"language: {app_config.get('app_overrides', {}).get('initial_language_name', 'agent default')}; "
+        f"greeting: \"{str(context.get('opening_message') or '')[:90]}\""
+    )
+    logger.warning("Sarvam call sent: %s", sent_summary)
+
     return {
+        "sent_summary": sent_summary,
         "attempt_id": attempt_id,
         "status": "calling",
         "dropped_variables": dropped,

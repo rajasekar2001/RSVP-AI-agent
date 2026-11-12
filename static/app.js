@@ -94,6 +94,7 @@ function voicePrefs() {
         inbound_prompt: $("#inboundPromptBox") ? $("#inboundPromptBox").value : undefined,
         max_call_seconds: $("#maxCallSeconds") ? Number($("#maxCallSeconds").value || 50) : undefined,
         retry_enabled: $("#retryEnabled") ? $("#retryEnabled").checked : undefined,
+        retry_incomplete: $("#retryIncomplete") ? $("#retryIncomplete").checked : undefined,
         retry_interval_minutes: $("#retryMinutes") ? Number($("#retryMinutes").value || 60) : undefined,
         retry_max_attempts: $("#retryMax") ? Number($("#retryMax").value || 5) : undefined,
         retry_window_start: $("#retryFrom") ? $("#retryFrom").value || "09:00" : undefined,
@@ -114,6 +115,7 @@ function syncVoicePrefs() {
     if ($("#inboundPromptBox")) $("#inboundPromptBox").value = state.agent?.inbound_prompt || "";
     if ($("#maxCallSeconds")) $("#maxCallSeconds").value = state.agent?.max_call_seconds || 50;
     if ($("#retryEnabled")) $("#retryEnabled").checked = state.agent?.retry_enabled !== false;
+    if ($("#retryIncomplete")) $("#retryIncomplete").checked = state.agent?.retry_incomplete !== false;
     if ($("#retryMinutes")) $("#retryMinutes").value = state.agent?.retry_interval_minutes || 60;
     if ($("#retryMax")) $("#retryMax").value = state.agent?.retry_max_attempts || 5;
     if ($("#retryFrom")) $("#retryFrom").value = state.agent?.retry_window_start || "09:00";
@@ -204,6 +206,13 @@ function render() {
                        </div>`
                     : "";
 
+                const warn = String(contact.launch_warning || "");
+                const sent = String(contact.sent_summary || "");
+                const warnDetail = (warn
+                    ? `<div style="font-size:12px;color:#b45309;margin-top:5px;overflow-wrap:anywhere">⚠ ${escapeHtml(warn)}</div>` : "")
+                    + (sent
+                    ? `<div style="font-size:11px;color:#64748b;margin-top:4px;overflow-wrap:anywhere">Sent to Sarvam: ${escapeHtml(sent)}</div>` : "");
+
                 const failureDetail = failure
                     ? `<div style="font-size:12px;color:#dc2626;margin-top:5px;overflow-wrap:anywhere">
                          ${escapeHtml(failure)}
@@ -237,12 +246,13 @@ function render() {
 
                 return `
                     <tr>
-                        <td>${escapeHtml(contact.name)}</td>
+                        <td>${escapeHtml(contact.name)}${["ready","failed"].includes(status.toLowerCase()) ? ` <button title="Remove" onclick="removeContact(${escapeHtml(JSON.stringify(contact.phone))})" style="border:0;background:none;color:#b91c1c;cursor:pointer;font-size:14px">✕</button>` : ""}</td>
                         <td>${escapeHtml(contact.phone)}</td>
                         <td>
                             <strong>${escapeHtml(status)}</strong>
                             ${callDetail}
                             ${failureDetail}
+                            ${warnDetail}
                             ${durationDetail}
                             ${inboundDetail}
                             ${retryDetail}
@@ -835,14 +845,9 @@ if ($("#saveWebhook")) {
     };
 }
 
-// CSV / XLSX upload
+// Import contacts from any file type (csv, excel, ods, json, docx, pdf, vcf, txt ...)
 async function uploadContacts(file) {
     if (!file || uploadingContacts) return;
-
-    if (!/\.(csv|xlsx)$/i.test(file.name)) {
-        toast("Upload a CSV or XLSX file.");
-        return;
-    }
 
     if (file.size > 8 * 1024 * 1024) {
         toast("Maximum file size is 8 MB.");
@@ -857,11 +862,11 @@ async function uploadContacts(file) {
     fd.append("file", file);
 
     try {
-        toast("Uploading contacts...");
+        toast("Reading contacts...");
         const d = await api("/api/contacts", {
             method: "POST",
             body: fd
-        }, 15000);
+        }, 30000);
 
         await refreshState();
         window.speechSynthesis?.cancel();
@@ -870,9 +875,14 @@ async function uploadContacts(file) {
         currentContactName = null;
         callFinished = false;
 
-        toast(`${d.count} contacts imported successfully`);
+        const plural = n => `${n} contact${n === 1 ? "" : "s"}`;
+        const parts = [`${plural(d.added || 0)} loaded and ready to call`];
+        if (d.removed) parts.push(`previous list of ${d.removed} replaced`);
+        if (d.skipped) parts.push(`${d.skipped} row${d.skipped === 1 ? "" : "s"} had a problem (${(d.skipped_examples || [])[0] || "invalid"})`);
+        const msg = parts.join(" · ");
+        toast(msg, d.skipped ? 7000 : 4000);
     } catch (e) {
-        toast(`Upload failed: ${e.message}`, 6000);
+        toast(`Import failed: ${e.message}`, 8000);
     } finally {
         uploadingContacts = false;
         if (input) {
@@ -883,11 +893,57 @@ async function uploadContacts(file) {
 }
 
 if ($("#contactsFile")) {
-    $("#contactsFile").accept = ".csv,.xlsx";
+    $("#contactsFile").removeAttribute("accept");
     $("#contactsFile").onchange = async e => {
         await uploadContacts(e.target.files?.[0]);
     };
 }
+
+// Add one contact by hand
+function openAddContact() {
+    if ($("#addName")) $("#addName").value = "";
+    if ($("#addPhone")) $("#addPhone").value = "";
+    if ($("#addContactMsg")) { $("#addContactMsg").textContent = ""; $("#addContactMsg").style.color = ""; }
+    $("#addContactModal")?.classList.add("open");
+    setTimeout(() => $("#addName")?.focus(), 30);
+}
+async function saveContact(keepOpen) {
+    const msg = $("#addContactMsg");
+    const name = $("#addName").value.trim();
+    const phone = $("#addPhone").value.trim();
+    try {
+        const d = await api("/api/contacts/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, phone })
+        }, 15000);
+        await refreshState();
+        toast(`${d.name} added (${d.phone})`);
+        if (keepOpen) {
+            $("#addName").value = ""; $("#addPhone").value = "";
+            msg.style.color = "#16a34a"; msg.textContent = `Added ${d.name}. Total contacts: ${d.total}.`;
+            $("#addName").focus();
+        } else {
+            $("#addContactModal").classList.remove("open");
+        }
+    } catch (e) {
+        msg.style.color = "#dc2626"; msg.textContent = e.message;
+    }
+}
+if ($("#addContactBtn")) $("#addContactBtn").onclick = openAddContact;
+if ($("#addContactClose")) $("#addContactClose").onclick = () => $("#addContactModal").classList.remove("open");
+if ($("#addContactSave")) $("#addContactSave").onclick = () => saveContact(false);
+if ($("#addContactMore")) $("#addContactMore").onclick = () => saveContact(true);
+["#addName", "#addPhone"].forEach(id => {
+    if ($(id)) $(id).addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); saveContact(false); } });
+});
+window.removeContact = async phone => {
+    if (!confirm("Remove this contact from the list?")) return;
+    try {
+        await api("/api/contacts/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone }) }, 10000);
+        await refreshState();
+    } catch (e) { toast(e.message, 5000); }
+};
 
 if ($("#runDemoCampaign")) {
     $("#runDemoCampaign").onclick = async () => {

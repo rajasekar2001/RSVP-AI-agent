@@ -26,7 +26,8 @@ class R:
 with mock.patch.object(sarvam_voice.requests, "post", return_value=R()) as post:
     sarvam_voice.start_sarvam_outbound("+919876543210", "Raja", ctx)
 ac = post.call_args.kwargs["json"]["app_config"]
-assert ac["app_overrides"] == {"initial_bot_message": p["opening_message"], "initial_language_name": "Tamil"}, ac
+assert ac["app_overrides"] == {"initial_bot_message": p["opening_message"], "initial_language_name": "Tamil",
+                               "text_to_speech_config": {"speech_settings": {"pace": 0.85}}}, ac   # speed 0.8 -> Sarvam pace (min 0.85)
 assert ac["agent_variables"]["call_instructions"].startswith("Event name")
 
 # default greeting
@@ -47,10 +48,18 @@ class Good:
     def json(self): return {"attempt_id": "att2"}
 c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT})
 ctx = app.build_real_call_context(app.load_state(), {"name": "Raja"})
+# default: refuse to place a call that would speak the Sarvam agent's own script
+with mock.patch.object(sarvam_voice.requests, "post", side_effect=[Bad(), Good()]) as post:
+    try:
+        sarvam_voice.start_sarvam_outbound("+919876543210", "Raja", ctx); raise SystemExit("should have refused")
+    except RuntimeError as e:
+        assert "Call NOT placed" in str(e) and post.call_count == 1
+os.environ["SARVAM_ALLOW_DROPPED_VARIABLES"] = "true"
 with mock.patch.object(sarvam_voice.requests, "post", side_effect=[Bad(), Good()]) as post:
     res = sarvam_voice.start_sarvam_outbound("+919876543210", "Raja", ctx)
 assert post.call_count == 2 and res["attempt_id"] == "att2"
 assert sorted(res["dropped_variables"]) == ["call_instructions", "opening_message"]
 assert "agent_variables" not in post.call_args.kwargs["json"]["app_config"]
 assert "initial_bot_message" in post.call_args.kwargs["json"]["app_config"]["app_overrides"]
+del os.environ["SARVAM_ALLOW_DROPPED_VARIABLES"]
 print("422 retry test passed")

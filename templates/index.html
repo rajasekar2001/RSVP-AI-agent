@@ -68,6 +68,7 @@
               <div><label for="maleAppVersion">Version</label>
                 <input id="maleAppVersion" placeholder="1" value="{{ state.agent.get('male_app_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:70px"></div>
             </div>
+            <small style="display:block;margin-bottom:6px"><b>Every agent you paste here (Female, Male) and your incoming-call agent must be set up like this in Sarvam, otherwise Sarvam reads its own script instead of what you type in this dashboard:</b> input variables <code>call_instructions</code> and <code>opening_message</code> (Send to LLM = ON) &middot; Greeting = <code>@opening_message</code> &middot; Instructions = <code>@call_instructions</code> (nothing else) &middot; Commit, then paste the new version number. If a variable is missing the app now refuses to place the call and tells you which one.</small>
             <small><b>Why two agents:</b> Sarvam fixes the voice inside each agent and its call API has no per-call voice option. Create the agent twice in Sarvam (copy the same shell, set voice Ishita/female in one and Shubh/male in the other, commit each), paste both IDs here, and this Voice dropdown switches the call between them. Nothing goes in .env. If the chosen gender has no agent here, the contact row shows a warning and the default agent's voice is used.</small>
             <label for="voiceTone">Tone</label>
             <select id="voiceTone" style="padding:9px;border-radius:8px;border:1px solid #ddd"><option value="normal">Normal</option><option value="friendly">Friendly</option><option value="professional">Professional</option><option value="calm">Calm</option></select>
@@ -82,6 +83,7 @@
             <small>The AI is told to finish within this time. Calls that run longer are flagged "over limit" in the table and report.</small>
             <strong style="margin-top:6px">Automatic retry for unanswered calls</strong>
             <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="retryEnabled" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('retry_enabled', True) else '' }}> Call again when a call is not answered (busy / no answer / failed)</label>
+            <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="retryIncomplete" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('retry_incomplete', True) else '' }}> Also call again when the person answered but the call ended without an RSVP (Awaiting RSVP result)</label>
             <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">
               <div><label for="retryMinutes">Retry after (minutes)</label><input id="retryMinutes" type="number" min="5" max="1440" step="5" value="{{ state.agent.get('retry_interval_minutes', 60) }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:110px"></div>
               <div><label for="retryMax">Max attempts (1–10)</label><input id="retryMax" type="number" min="1" max="10" value="{{ state.agent.get('retry_max_attempts', 5) }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:110px"></div>
@@ -95,6 +97,7 @@
             <textarea id="inboundPromptBox" class="instruction" rows="6">{{ state.agent.inbound_prompt or '' }}</textarea>
             <small>Preview an incoming call:
               <a href="#" class="previewInbound" data-scenario="missed">missed-call callback</a> ·
+              <a href="#" class="previewInbound" data-scenario="cutoff">call cut off before RSVP</a> ·
               <a href="#" class="previewInbound" data-scenario="answered">already answered</a> ·
               <a href="#" class="previewInbound" data-scenario="unknown">unknown number</a>
             </small>
@@ -132,8 +135,8 @@
 
     <section class="panel" id="campaigns">
       <div class="section-title"><div><small>OUTBOUND</small><h2>RSVP campaign</h2><small style="display:block;margin-top:4px">Sarvam Voice Agents for real calls</small></div><div style="display:flex;gap:8px"><button id="runDemoCampaign" class="ghost">▶ Browser Demo</button><button id="runCampaign" class="black">☎ Real Campaign</button></div></div>
-      <div class="campaign-tools"><label class="upload-btn">＋ Import CSV<input type="file" id="contactsFile" accept=".csv"></label><button id="webhookBtn" class="ghost">⌁ Configure webhook</button></div>
-      <p class="muted">CSV columns: <code>name,phone</code>. Browser Demo runs locally. Real Campaign uses Sarvam Voice Agents. Configure a committed Sarvam agent, telephony connection, outbound phone number, workspace API key, and this app’s public HTTPS URL.</p><p id="sarvamStatus" class="muted">Checking Sarvam configuration…</p>
+      <div class="campaign-tools"><label class="upload-btn">＋ Import file<input type="file" id="contactsFile"></label><button id="webhookBtn" class="ghost">⌁ Configure webhook</button><button id="addContactBtn" class="black">＋ Add</button></div>
+      <p class="muted">Import any contact file (CSV, Excel .xlsx/.xls, ODS, Google Sheets download, JSON, Word, PDF, vCard, TXT) with a name and a phone column, or use <b>＋ Add</b> to type one in. New numbers are added to the list; numbers already in it are skipped. A 10-digit number gets +91. Browser Demo runs locally. Real Campaign uses Sarvam Voice Agents. Configure a committed Sarvam agent, telephony connection, outbound phone number, workspace API key, and this app’s public HTTPS URL.</p><p id="sarvamStatus" class="muted">Checking Sarvam configuration…</p>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th>RSVP</th><th>Guests</th></tr></thead><tbody id="contactsBody"></tbody></table></div>
       <section class="recordings-section" style="margin-top:28px;border:1px solid #e5e7eb;border-radius:18px;padding:20px">
         <h3>Call Recordings &amp; Transcripts</h3>
@@ -150,6 +153,11 @@
 </section>
 </main>
 
+<div id="addContactModal" class="modal"><div class="modal-card"><button class="x" id="addContactClose">×</button><h2>Add contact</h2><p class="muted">Type a name and phone number. It is added to the call list.</p>
+<label for="addName">Name</label><input id="addName" placeholder="Raja" autocomplete="off" maxlength="120">
+<label for="addPhone" style="margin-top:12px">Phone</label><input id="addPhone" placeholder="+919876543210 or 9876543210" autocomplete="off" inputmode="tel" maxlength="30">
+<p id="addContactMsg" class="muted" style="min-height:18px;margin:10px 0 0"></p>
+<div style="display:flex;gap:8px;margin-top:8px"><button id="addContactSave" class="black full" style="margin-top:0">Add contact</button><button id="addContactMore" class="ghost full" style="margin-top:0">Add &amp; add another</button></div></div></div>
 <div id="webhookModal" class="modal"><div class="modal-card"><button class="x">×</button><h2>Webhook</h2><p>When an RSVP finishes, POST the result to this URL.</p><input id="webhookUrl" placeholder="https://your-site.com/api/rsvp"><button id="saveWebhook" class="black full">Save webhook</button></div></div>
 <div id="reportModal" class="modal"><div class="modal-card" style="width:min(720px,94vw);max-height:90vh;overflow:auto">
   <button class="x" id="reportClose" type="button">×</button>

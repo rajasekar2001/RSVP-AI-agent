@@ -213,3 +213,9 @@ For the first real-call test:
 - Instant Outbound webhook: https://docs.sarvam.ai/voice-agents/api/instant-outbound/webhook-payload
 - Phone numbers / telephony: https://docs.sarvam.ai/voice-agents/deploy/telephony
 - Rent from Sarvam: https://docs.sarvam.ai/voice-agents/deploy/telephony/rent-from-sarvam
+
+## Adding contacts
+- **＋ Import file**: CSV, TSV, TXT, Excel (.xlsx/.xlsm/.xls), ODS, JSON, Word (.docx), PDF (with selectable text), vCard (.vcf), HTML. Needs a name and a phone (header names are matched loosely: name / full name, phone / mobile / whatsapp ...). Files with no header also work.
+- **＋ Add**: type one name + phone. "Add & add another" keeps the box open.
+- Numbers are stored as +E.164 (10-digit numbers get +91; change with `DEFAULT_COUNTRY_CODE` in `.env`). Numbers already in the list are skipped. ✕ removes a contact that has not been called.
+- Install new packages: `pip install -r requirements.txt` (adds odfpy, python-docx, xlrd).

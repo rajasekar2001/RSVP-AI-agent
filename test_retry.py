@@ -45,7 +45,11 @@ for status in ("busy", "failed"):
 # --- 2. answered -> never retried
 fresh(); raja = hook("connected", final_agent_variables={"rsvp": "Yes", "guest_names": "[]"})
 assert not raja.get("next_retry_at") and raja["rsvp"] == "Yes"
-fresh(); assert not hook("connected").get("next_retry_at")   # picked up but no RSVP: they DID attend the call
+# picked up but no RSVP recorded ("Awaiting RSVP result"): now retried too (switch: retry_incomplete)
+fresh(); raja = hook("connected"); assert raja.get("next_retry_at") and "ended before the RSVP" in raja["retry_note"], raja
+c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "retry_incomplete": False})
+fresh(); assert not hook("connected").get("next_retry_at")
+c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "retry_incomplete": True})
 
 # --- 3. last attempt -> gives up
 fresh(attempts=3); raja = hook("no_answer")
@@ -74,13 +78,20 @@ with mock.patch.object(app, "start_sarvam_outbound", return_value={"attempt_id":
     due_contact(); st = app.load_state(); st["contacts"].append({"name": "Other", "phone": "+911", "status": "Calling"}); app.save_state(st); app.run_due_retry()
     assert out.call_count == 0, out.call_args_list
 
-# --- 6. they ring the AI back -> retries stop
+# --- 6. they ring the AI back -> retries stop once an RSVP is recorded; if not, the retry stays scheduled
 due_contact()
 body = {"interaction_id": "20261106/x1", "user_phone_number": "+919876543210", "duration": 30,
         "interaction_transcript": [{"role": "agent", "en_text": "Hello Raja!"}, {"role": "user", "en_text": "I am busy now"}]}
 assert c.post("/api/sarvam/inbound-webhook?token=t", json=body).status_code == 200
 raja = app.load_state()["contacts"][0]
-assert "next_retry_at" not in raja and "called back" in raja["retry_note"]
+assert raja.get("next_retry_at") and "no RSVP was recorded" in raja["retry_note"], raja   # busy: keep trying
+due_contact()
+body["interaction_id"] = "20261106/x2"
+body["interaction_transcript"] = [{"role": "agent", "en_text": "Will you be attending the event?"}, {"role": "user", "en_text": "Yes"},
+                                  {"role": "agent", "en_text": "How many additional guests?"}, {"role": "user", "en_text": "None"}]
+assert c.post("/api/sarvam/inbound-webhook?token=t", json=body).status_code == 200
+raja = app.load_state()["contacts"][0]
+assert "next_retry_at" not in raja and "called back" in raja["retry_note"] and raja["rsvp"] == "Yes", raja
 
 # --- 7. launch (config) errors never auto-redial
 fresh(status="Ready")

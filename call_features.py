@@ -296,6 +296,12 @@ def inbound_default_greeting():
             "I called you earlier but you were not able to take the call. Are you free to talk now?")
 
 
+def inbound_cutoff_greeting():
+    """Caller whose earlier call connected but was cut off / ended before the RSVP was noted."""
+    return ("Hello {name}! This is the AI assistant for {event_intro}. "
+            "Our earlier call got cut off before I could note your RSVP. Do you have a minute to continue?")
+
+
 def inbound_answered_greeting():
     """Caller who already gave an RSVP."""
     return ("Hello {name}! Thanks for calling back. I'm the AI assistant for {event_intro}. "
@@ -309,13 +315,14 @@ def inbound_unknown_greeting():
 # --------------------------------------------------------------------- automatic retries
 RETRY_DEFAULTS = {
     "retry_enabled": True,
+    "retry_incomplete": True,  # also call again when the call connected but ended with no RSVP recorded
     "retry_interval_minutes": 60,
     "retry_max_attempts": 5,
     "retry_window_start": "09:00",
     "retry_window_end": "20:00",
 }
 RETRYABLE_CALL_STATUSES = {"no_answer", "busy", "failed"}  # NOT "connected", NOT "launch_failed" (our own setup errors)
-RETRYABLE_STATUSES = {"No answer", "Busy", "Failed"}
+RETRYABLE_STATUSES = {"No answer", "Busy", "Failed", "Call ended"}  # "Call ended" = connected but no RSVP yet
 
 
 def _hhmm(value, default):
@@ -337,6 +344,7 @@ def retry_settings(agent):
         attempts = RETRY_DEFAULTS["retry_max_attempts"]
     return {
         "retry_enabled": bool(a.get("retry_enabled", RETRY_DEFAULTS["retry_enabled"])),
+        "retry_incomplete": bool(a.get("retry_incomplete", RETRY_DEFAULTS["retry_incomplete"])),
         "retry_interval_minutes": max(5, min(1440, minutes)),
         "retry_max_attempts": max(1, min(10, attempts)),
         "retry_window_start": _hhmm(a.get("retry_window_start"), RETRY_DEFAULTS["retry_window_start"]),
@@ -350,13 +358,21 @@ def in_call_window(now, start, end):
     return start <= cur < end if start <= end else (cur >= start or cur < end)
 
 
+def incomplete_call(contact):
+    """The person answered, but the call ended before an RSVP was recorded (hung up, cut off, too long)."""
+    return contact.get("status") == "Call ended" and not contact.get("rsvp") and contact.get("call_status") == "connected"
+
+
 def should_retry(contact, settings):
-    """Would this finished call earn another attempt? (call not answered, attempts left, not stopped)"""
+    """Would this finished call earn another attempt? (not answered OR answered but no RSVP, attempts left, not stopped)"""
     if not settings["retry_enabled"] or contact.get("do_not_call"):
         return False
     if contact.get("rsvp") or contact.get("status") not in RETRYABLE_STATUSES:
         return False
-    if contact.get("call_status") not in RETRYABLE_CALL_STATUSES:
+    if incomplete_call(contact):
+        if not settings.get("retry_incomplete", True):
+            return False
+    elif contact.get("call_status") not in RETRYABLE_CALL_STATUSES:
         return False
     return int(contact.get("attempts") or 1) < settings["retry_max_attempts"]
 
