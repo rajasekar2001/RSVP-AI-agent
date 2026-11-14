@@ -857,6 +857,18 @@ def inbound_scenario(contact):
     return "missed"
 
 
+def _inbound_prompt_text(agent):
+    """The dashboard's "Incoming call instructions". If that box holds a copy of the OUTBOUND script
+    (it makes the AI behave as if it were calling out), use the built-in call-back instructions instead."""
+    saved = str(agent.get("inbound_prompt", "")).strip()
+    outbound = re.sub(r"\s+", " ", str(agent.get("prompt", ""))).strip().lower()
+    flat = re.sub(r"\s+", " ", saved).lower()
+    if not saved or (outbound and (outbound[:120] in flat or flat[:120] in outbound)) \
+            or re.search(r"call the invited guests|start by greeting each guest", flat):
+        return cf.DEFAULT_INBOUND_PROMPT
+    return saved
+
+
 def build_inbound_context(state, contact):
     """Greeting + instructions for a person CALLING US BACK. `contact` is None for unknown callers."""
     agent = state.get("agent", {})
@@ -897,7 +909,7 @@ def build_inbound_context(state, contact):
         "EVENT FACTS: none saved; say you do not have event details."
     instructions = "\n\n".join(x for x in (
         fact_block,
-        str(agent.get("inbound_prompt", "")).strip() or cf.DEFAULT_INBOUND_PROMPT,
+        _inbound_prompt_text(agent),
         caller, style, cf.gender_text(agent.get("voice_gender")), cf.time_limit_text(agent.get("max_call_seconds")),
         "Never invent names, dates, times or venues. Never mention other contacts.",
     ) if x)

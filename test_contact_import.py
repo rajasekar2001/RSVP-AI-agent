@@ -160,3 +160,13 @@ c.post(f"/api/sarvam/inbound-webhook?token={tok}", json={"interaction_id": "i/2"
 ct = app.load_state()["contacts"][0]; assert ct["rsvp"] == "Yes" and not ct.get("next_retry_at"), ct
 c.post("/api/reset")
 print("incomplete-call retry + call-back passed")
+
+# an inbound-instructions box that holds the OUTBOUND script must not reach the call-back agent
+st = app.load_state()
+st["agent"]["prompt"] = "Call the invited guests for Friday's event and confirm whether they will attend.\nStart by greeting each guest politely."
+st["agent"]["inbound_prompt"] = st["agent"]["prompt"]
+ctx = app.build_inbound_context(st, None)
+assert "Call the invited guests" not in ctx["call_instructions"] and "INCOMING call" in ctx["call_instructions"]
+st["agent"]["inbound_prompt"] = "Custom call-back rules: be brief."
+assert "Custom call-back rules" in app.build_inbound_context(st, None)["call_instructions"]
+print("inbound prompt guard passed")

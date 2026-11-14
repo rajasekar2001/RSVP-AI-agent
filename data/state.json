@@ -40,7 +40,7 @@
       "rsvp": "",
       "guests": "",
       "attempts": 1,
-      "attempt_id": "42976e7d-88bd-421a-819e-70c841828dda",
+      "attempt_id": "9647a3e5-3d1f-4719-825b-bd43ebd8da5c",
       "app_id": "Female-Agen-52ca3214-e6d9",
       "sent_summary": "agent Female-Agen-52ca3214-e6d9 v4; variables: call_instructions, opening_message; greeting override: yes; language: Tamil; greeting: \"Hello! I'm an AI assistant calling about our upcoming event. The event is on Friday. Am I \"",
       "sent_greeting": "Hello! I'm an AI assistant calling about our upcoming event. The event is on Friday. Am I speaking with Raja?",
@@ -48,11 +48,11 @@
       "interaction_id": "NO_INTERACTION_ID",
       "duration": 0.0,
       "failure_reason": "NO_FAILURE_REASON",
-      "processed_attempt_id": "42976e7d-88bd-421a-819e-70c841828dda",
-      "call_ended_at": "2026-11-12T07:34:21.902265+00:00",
+      "processed_attempt_id": "9647a3e5-3d1f-4719-825b-bd43ebd8da5c",
+      "call_ended_at": "2026-11-14T10:00:10.325111+00:00",
       "reconciled_from": "sarvam_analytics",
-      "next_retry_at": "2026-11-12T14:04:21",
-      "retry_note": "Attempt 1 of 5 not answered. Next try about 12 Nov 14:04"
+      "next_retry_at": "2026-11-14T16:30:10",
+      "retry_note": "Attempt 1 of 5 not answered. Next try about 14 Nov 16:30"
     }
   ],
   "tests": [
@@ -666,6 +666,89 @@
       "processed_attempt_id": "36d02285-857f-4035-be3f-011bda9e3de7",
       "call_ended_at": "2026-11-11T12:17:33.098149+00:00",
       "reconciled_from": "sarvam_analytics"
+    },
+    {
+      "name": "Raja",
+      "phone": "+918903632050",
+      "status": "Failed",
+      "rsvp": "",
+      "guests": "",
+      "attempts": 4,
+      "attempt_id": "c26bdeb3-cfc5-4b84-a084-ac53a02c96f8",
+      "app_id": "Female-Agen-52ca3214-e6d9",
+      "sent_summary": "agent Female-Agen-52ca3214-e6d9 v4; variables: call_instructions, opening_message; greeting override: yes; language: Tamil; greeting: \"Hello Raja! I called you earlier about the event on Friday, but you could not take the cal\"",
+      "sent_greeting": "Hello Raja! I called you earlier about the event on Friday, but you could not take the call. Are you free to talk now?",
+      "call_status": "launch_failed",
+      "interaction_id": "20261113/1be2283a-10:16:26-df7266c5",
+      "duration": 40.884986877441406,
+      "failure_reason": "Sarvam network error: ConnectionError",
+      "processed_attempt_id": "c26bdeb3-cfc5-4b84-a084-ac53a02c96f8",
+      "call_ended_at": "2026-11-13T04:47:07",
+      "reconciled_from": "sarvam_analytics",
+      "sarvam_variables": {
+        "opening_message": "Hello Raja! I called you earlier about the event on Friday, but you could not take the call. Are you free to talk now?",
+        "call_instructions": "Call the invited guests for Friday's event and confirm whether they will attend.\n\nStart by greeting each guest politely and introducing yourself as an AI assistant calling on behalf of the event organiser.\n\nAsk whether they will attend Friday's event.\n\nIf YES, ask whether they are bringing any additional guests. Ask how many guests are coming and collect every additional guest's name.\n\nIf NO, record their RSVP as No, thank them, and end the call.\n\nIf MAYBE, record their RSVP as Maybe and thank them politely.\n\nRepeat the attendance status, additional guest count, and guest names to confirm everything is correct.\n\nAsk one question at a time, speak naturally in English, and never invent guest information. Thank the guest and end the call.\nStart by introducing yourself as an AI assistant and asking whether the invited guest will attend Friday's event.\n\nIf Yes: Record RSVP as Yes. Ask whether they will bring any additional guests. If yes, ask how many guests and collect every additional guest's name. Confirm the details before ending.\n\nIf No: Record RSVP as No, thank the guest and end the call.\n\nIf Maybe: Record RSVP as Maybe, thank the guest and end the call.\n\nIf the guest cannot provide a name, do not invent it. If they ask to stop, end the call politely.\n\nAsk one question at a time. Do not invent event details. Repeat the final RSVP details for confirmation. Thank the guest and end the call.\n\nUse a natural, neutral tone. Speak briskly and keep every reply very short.\n\nYou are a female assistant: in gendered languages use feminine forms when speaking about yourself.\n\nHARD TIME LIMIT: the whole call must finish within 50 seconds. Use very short sentences (under 12 words), one question at a time, no small talk, and do not repeat yourself. If the RSVP is still not settled after about 35 seconds, thank the person and end the call. End the call as soon as the RSVP and guest names are confirmed.\n\nYou are calling Raja. The opening line has ALREADY been spoken; never repeat it or introduce yourself again. Ask one question at a time and wait. A Yes to the identity question is NOT an attendance answer. Never invent names, dates, times or venues. Never mention other contacts. This is call attempt 3: we called Raja before and could not connect. The opening line already asked whether they are free to talk. If they say they are busy or not free, say: No problem, we will call you again later. Thank you. Then end the call. If they are free, skip any introduction and continue with the normal steps.",
+        "user_name": "Manan",
+        "call_summary": "The agent confirmed Raja's attendance for Friday's event and noted that he will be accompanied by one guest named Manoj."
+      },
+      "result_status": "RSVP not received — awaiting extraction",
+      "transcript": [
+        {
+          "role": "agent",
+          "en_text": "Hello Raja! I called you earlier about the event on Friday, but you could not take the call. Are you free to talk now?",
+          "language": "Tamil"
+        },
+        {
+          "role": "user",
+          "en_text": "யா எஸ்.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "சரி, இந்த Friday event-க்கு நீங்கள் வருவீர்களா?",
+          "language": "Tamil"
+        },
+        {
+          "role": "user",
+          "en_text": "ஆ வருவேன்.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "சூப்பர். உங்க கூட வேற யாராவது guest வர்றாங்களா?",
+          "language": "Tamil"
+        },
+        {
+          "role": "user",
+          "en_text": "ம்.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "சரி, எத்தனை பேர் வர்றாங்க? அவங்க பெயர்களையும் கொஞ்சம் சொல்லுங்க.",
+          "language": "Tamil"
+        },
+        {
+          "role": "user",
+          "en_text": "ஒருத்தன் வர்றான். அவன் பேரு வந்து மனோஜ்.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "ஓ சரி. அப்போ நீங்கள் மற்றும் மனோஜ் என ரெண்டு பேர் வர்றீங்க. இது சரிதானா?",
+          "language": "Tamil"
+        },
+        {
+          "role": "user",
+          "en_text": "ஆமா.",
+          "language": "UNKNOWN"
+        },
+        {
+          "role": "agent",
+          "en_text": "மிக்க நன்றி. Friday-க்கு உங்களை பார்க்கிறோம். Bye!",
+          "language": "Tamil"
+        }
+      ]
     }
   ]
 }
