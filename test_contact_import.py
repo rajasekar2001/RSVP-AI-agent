@@ -259,3 +259,17 @@ def _test_inbound_like_outbound():
     print("inbound-like-outbound ok")
 
 _test_inbound_like_outbound()
+
+
+def _test_inbound_phone_fallback():
+    import os
+    from unittest import mock
+    st = {"agent": {"greeting": "Hello {name}!", "prompt": "x"}, "knowledge": [],
+          "contacts": [{"name": "Raja", "phone": "+919000000001", "status": "Completed", "attempts": 1}]}
+    with mock.patch.object(app, "load_state", return_value=st), mock.patch.object(app, "_hook_token_ok", return_value=True):
+        assert app._inbound_context_for(None, "")["contact_name"] == "Raja"
+        assert app._inbound_context_for(None, "@User Identifier")["contact_name"] == "Raja"
+        assert app._inbound_context_for(None, "+919888888888")["contact_name"] == ""   # usable but unknown number
+    print("inbound phone fallback ok")
+
+_test_inbound_phone_fallback()

@@ -2615,6 +2615,17 @@ def _inbound_context_for(request: Request, phone: str):
     try:
         state = load_state()
         contact = cf.find_contact_by_phone(state, phone)
+        if not contact:
+            # Sarvam sometimes sends nothing usable (empty, a placeholder, or our own number). If exactly one person has
+            # been called, the call-back is almost certainly theirs; never guess when a usable number simply does not match.
+            d = cf.digits(phone)
+            own = cf.digits(os.getenv("SARVAM_PHONE_NUMBER", ""))
+            if len(d) < 7 or (own and d[-10:] == own[-10:]):
+                called = [c for c in state.get("contacts", []) if int(c.get("attempts") or 0) > 0]
+                if len(called) == 1:
+                    contact = called[0]
+                    print("INBOUND HOOK: number unusable, matched the only called contact", flush=True)
+            _note_diag("hook_phone_seen", digits=len(d), last4=d[-4:], unusable=len(d) < 7)
         if (contact and contact.get("status") in {"Starting", "Calling"}
                 and contact.get("outbound_call_instructions") and state.get("agent", {}).get("one_agent_id")):
             # One agent serves both directions: this hook fired for OUR outgoing call, so keep the outbound script.
