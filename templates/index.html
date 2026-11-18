@@ -58,6 +58,16 @@
               <option value="female" {{ 'selected' if state.agent.get('voice_gender') == 'female' else '' }}>Female</option>
               <option value="male" {{ 'selected' if state.agent.get('voice_gender') == 'male' else '' }}>Male</option>
             </select>
+            <div style="margin:4px 0;font-weight:600">★ ONE agent for outgoing AND incoming calls (recommended)</div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap">
+              <div><label for="oneAgentId">Agent ID</label>
+                <input id="oneAgentId" placeholder="RSVP-male-I-c96ab5c4-919e" value="{{ state.agent.get('one_agent_id', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:260px"></div>
+              <div><label for="oneMaleVersion">Version with MALE voice</label>
+                <input id="oneMaleVersion" placeholder="1" value="{{ state.agent.get('one_male_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:90px"></div>
+              <div><label for="oneFemaleVersion">Version with FEMALE voice</label>
+                <input id="oneFemaleVersion" placeholder="2" value="{{ state.agent.get('one_female_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:90px"></div>
+            </div>
+            <small style="display:block;margin-bottom:10px">Fill this and the separate Female/Male boxes below are ignored. Outgoing calls use this agent at the version for the chosen voice; Save also points the incoming deployment on your number at the same version.</small>
             <div style="display:flex;gap:14px;flex-wrap:wrap">
               <div><label for="femaleAppId">Female agent ID (Sarvam)</label>
                 <input id="femaleAppId" placeholder="RSVP-Female-xxxx" value="{{ state.agent.get('female_app_id', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:230px"></div>
@@ -68,6 +78,14 @@
               <div><label for="maleAppVersion">Version</label>
                 <input id="maleAppVersion" placeholder="1" value="{{ state.agent.get('male_app_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:70px"></div>
             </div>
+            <div style="margin:10px 0 4px;font-weight:600">Incoming calls (one phone number, voice follows the Voice choice above)</div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap">
+              <div><label for="inboundFemaleVersion">Incoming agent version with FEMALE voice</label>
+                <input id="inboundFemaleVersion" placeholder="1" value="{{ state.agent.get('inbound_female_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:90px"></div>
+              <div><label for="inboundMaleVersion">Incoming agent version with MALE voice</label>
+                <input id="inboundMaleVersion" placeholder="2" value="{{ state.agent.get('inbound_male_version', '') }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:90px"></div>
+            </div>
+            <small style="display:block;margin-bottom:10px">In Sarvam make ONE incoming agent and commit it twice: once with a female voice (e.g. Ishita) and once with a male voice (e.g. Shubh). Enter those two committed version numbers. When you press Save, this app switches your phone number's incoming deployment to the version that matches the Voice you chose.</small>
             <small style="display:block;margin-bottom:6px"><b>Every agent you paste here (Female, Male) and your incoming-call agent must be set up like this in Sarvam, otherwise Sarvam reads its own script instead of what you type in this dashboard:</b> input variables <code>call_instructions</code> and <code>opening_message</code> (Send to LLM = ON) &middot; Greeting = <code>@opening_message</code> &middot; Instructions = <code>@call_instructions</code> (nothing else) &middot; Commit, then paste the new version number. If a variable is missing the app now refuses to place the call and tells you which one.</small>
             <small><b>Why two agents:</b> Sarvam fixes the voice inside each agent and its call API has no per-call voice option. Create the agent twice in Sarvam (copy the same shell, set voice Ishita/female in one and Shubh/male in the other, commit each), paste both IDs here, and this Voice dropdown switches the call between them. Nothing goes in .env. If the chosen gender has no agent here, the contact row shows a warning and the default agent's voice is used.</small>
             <label for="voiceTone">Tone</label>

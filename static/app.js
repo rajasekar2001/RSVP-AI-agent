@@ -86,6 +86,11 @@ function voicePrefs() {
         female_app_id: $("#femaleAppId") ? $("#femaleAppId").value.trim() : undefined,
         female_app_version: $("#femaleAppVersion") ? $("#femaleAppVersion").value.trim() : undefined,
         male_app_id: $("#maleAppId") ? $("#maleAppId").value.trim() : undefined,
+        one_agent_id: $("#oneAgentId") ? $("#oneAgentId").value.trim() : undefined,
+        one_female_version: $("#oneFemaleVersion") ? $("#oneFemaleVersion").value.trim() : undefined,
+        one_male_version: $("#oneMaleVersion") ? $("#oneMaleVersion").value.trim() : undefined,
+        inbound_female_version: $("#inboundFemaleVersion") ? $("#inboundFemaleVersion").value.trim() : undefined,
+        inbound_male_version: $("#inboundMaleVersion") ? $("#inboundMaleVersion").value.trim() : undefined,
         male_app_version: $("#maleAppVersion") ? $("#maleAppVersion").value.trim() : undefined,
         voice_tone: $("#voiceTone")?.value || "normal",
         voice_speed: Number($("#voiceSpeed")?.value || 1),
@@ -108,6 +113,11 @@ function syncVoicePrefs() {
     if ($("#femaleAppId")) $("#femaleAppId").value = state.agent?.female_app_id || "";
     if ($("#femaleAppVersion")) $("#femaleAppVersion").value = state.agent?.female_app_version || "";
     if ($("#maleAppId")) $("#maleAppId").value = state.agent?.male_app_id || "";
+    if ($("#oneAgentId")) $("#oneAgentId").value = state.agent?.one_agent_id || "";
+    if ($("#oneFemaleVersion")) $("#oneFemaleVersion").value = state.agent?.one_female_version || "";
+    if ($("#oneMaleVersion")) $("#oneMaleVersion").value = state.agent?.one_male_version || "";
+    if ($("#inboundFemaleVersion")) $("#inboundFemaleVersion").value = state.agent?.inbound_female_version || "";
+    if ($("#inboundMaleVersion")) $("#inboundMaleVersion").value = state.agent?.inbound_male_version || "";
     if ($("#maleAppVersion")) $("#maleAppVersion").value = state.agent?.male_app_version || "";
     if ($("#voiceTone")) $("#voiceTone").value = state.agent?.voice_tone || "normal";
     if ($("#greetingBox")) $("#greetingBox").value = state.agent?.greeting || "";
@@ -707,6 +717,12 @@ if ($("#bars")) {
     }
 }
 
+function inboundVoiceNote(d) {
+    const v = d && d.inbound_voice;
+    if (!v || v.ok === null || v.ok === undefined) return "";
+    return v.ok ? ` · ${v.message}` : ` · Incoming-call voice NOT switched: ${v.message}`;
+}
+
 if ($("#buildBtn")) {
     $("#buildBtn").onclick = async () => {
         try {
@@ -720,7 +736,7 @@ if ($("#buildBtn")) {
             syncVoicePrefs();
             if ($("#instructionBox")) $("#instructionBox").value = prompt;
             showTab("build");
-            toast("Agent built. Test it now.");
+            toast("Agent built. Test it now." + inboundVoiceNote(d), 6000);
         } catch (e) {
             toast(e.message, 5000);
         }
@@ -739,7 +755,7 @@ if ($("#saveInstructions")) {
             state.agent = d.agent;
             syncVoicePrefs();
             if ($("#prompt")) $("#prompt").value = prompt;
-            toast("Instructions saved");
+            toast("Instructions saved" + inboundVoiceNote(d), 6000);
         } catch (e) {
             toast(e.message, 5000);
         }
@@ -822,10 +838,13 @@ function openWebhookModal() {
 if ($("#webhookBtn")) $("#webhookBtn").onclick = openWebhookModal;
 if ($("#webhookNode")) $("#webhookNode").onclick = openWebhookModal;
 
-if ($(".modal .x")) {
-    $(".modal .x").onclick = () =>
-        $("#webhookModal")?.classList.remove("open");
-}
+// Every modal's × closes its own modal (the old code bound only the first × on the page).
+document.querySelectorAll(".modal .x").forEach((btn) => {
+    btn.onclick = () => btn.closest(".modal")?.classList.remove("open");
+});
+document.querySelectorAll(".modal").forEach((m) => {
+    m.addEventListener("click", (e) => { if (e.target === m) m.classList.remove("open"); });
+});
 
 if ($("#saveWebhook")) {
     $("#saveWebhook").onclick = async () => {
