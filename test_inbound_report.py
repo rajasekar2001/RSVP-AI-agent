@@ -33,7 +33,7 @@ assert inn["scenario"] == "missed" and "busy or not free" in inn["call_instructi
 ans = c.get("/api/call-preview?name=Raja&direction=inbound&scenario=answered").json()
 unk = c.get("/api/call-preview?direction=inbound&scenario=unknown").json()
 assert "Thanks for calling back" in ans["opening_message"] and "already have your RSVP" in ans["opening_message"]
-assert "How can I help you?" in unk["opening_message"] and "NOT on our invite list" in unk["call_instructions"]
+assert "May I have your name?" in unk["opening_message"] and "not in our call list" in unk["call_instructions"] and "take their RSVP" in unk["call_instructions"]
 assert "Community Hall" in inn["call_instructions"]
 
 # 2) on-start hook for inbound: known and unknown caller, token required
@@ -41,7 +41,7 @@ assert c.post("/api/sarvam/inbound-context", json={"phone": "+919876543210"}).st
 k = c.post("/api/sarvam/inbound-context", headers=H, json={"user_phone_number": "09876543210"}).json()
 assert k["known_caller"] and k["contact_name"] == "Raja", k
 u = c.get("/api/sarvam/inbound-context?phone=%2B911111111111", headers=H).json()
-assert not u["known_caller"] and u["scenario"] == "unknown" and "NOT on our invite list" in u["call_instructions"]
+assert not u["known_caller"] and u["scenario"] == "unknown" and "not in our call list" in u["call_instructions"]
 # token may also come as ?token= (matches SARVAM_WEBHOOK_TOKEN too) so the hook needs no extra header
 assert c.get("/api/sarvam/inbound-context?phone=%2B919876543210&token=t").json()["contact_name"] == "Raja"
 assert c.get("/api/sarvam/inbound-context?phone=%2B919876543210&token=ins").status_code == 200

@@ -1,4 +1,5 @@
 import asyncio
+import sarvam_voice
 import csv
 import io
 import hmac
@@ -462,6 +463,9 @@ def start_real_contact_call(contact):
             current["app_id"] = result.get("app_id", "")
             current["sent_summary"] = result.get("sent_summary", "")
             current["sent_greeting"] = str(call_context.get("opening_message") or "")[:600]
+            # Kept so the shared agent's on-start hook can hand the SAME text back during this outgoing call.
+            current["outbound_opening_message"] = str(call_context.get("opening_message") or "")[:1500]
+            current["outbound_call_instructions"] = str(call_context.get("call_instructions") or "")[:6000]
             current.pop("launch_warning", None)
             current["status"] = "Calling"
             current["call_status"] = result.get("status", "calling")
@@ -623,6 +627,23 @@ async def build(request: Request):
             if v and not re.fullmatch(r"[1-9]\d{0,5}", v):
                 raise HTTPException(status_code=400, detail=f"{g.title()} agent version must be a number")
             agent[f"{g}_app_version"] = v
+    if "one_agent_id" in data:
+        v = str(data["one_agent_id"] or "").strip()
+        if v and not re.fullmatch(r"[A-Za-z0-9_.\-]{3,100}", v):
+            raise HTTPException(status_code=400, detail="The one-agent ID looks invalid")
+        agent["one_agent_id"] = v
+    for g in ("female", "male"):
+        if f"one_{g}_version" in data:
+            v = str(data[f"one_{g}_version"] or "").strip()
+            if v and not re.fullmatch(r"[1-9]\d{0,5}", v):
+                raise HTTPException(status_code=400, detail=f"One-agent {g} version must be a number")
+            agent[f"one_{g}_version"] = v
+    for g in ("female", "male"):
+        if f"inbound_{g}_version" in data:
+            v = str(data[f"inbound_{g}_version"] or "").strip()
+            if v and not re.fullmatch(r"[1-9]\d{0,5}", v):
+                raise HTTPException(status_code=400, detail=f"Incoming {g} version must be a number")
+            agent[f"inbound_{g}_version"] = v
     if "voice_gender" in data:
         value = str(data["voice_gender"] or "").strip().lower()
         if value not in {"", "female", "male"}:
@@ -649,7 +670,28 @@ async def build(request: Request):
         test["status"] = "ready"
         test["time"] = ""
     save_state(state)
-    return {"ok": True, "agent": state["agent"]}
+    inbound_voice = await _sync_inbound_voice(state["agent"])
+    return {"ok": True, "agent": state["agent"], "inbound_voice": inbound_voice}
+
+
+async def _sync_inbound_voice(agent):
+    """Make the incoming-call agent speak with the voice chosen in the dashboard (one phone number).
+    Sarvam keeps the voice inside each agent VERSION, so we point the inbound deployment at the version
+    that has the female or male voice."""
+    gender = str(agent.get("voice_gender") or "")
+    version = ""
+    if gender:
+        version = str(agent.get(f"one_{gender}_version") or "") if agent.get("one_agent_id") else ""
+        version = version or str(agent.get(f"inbound_{gender}_version") or "")
+    if not version:
+        return {"ok": None, "message": ""}  # nothing to switch (Default voice, or no version entered)
+    try:
+        message = await asyncio.to_thread(sarvam_voice.set_inbound_voice_version, version)
+        return {"ok": True, "message": message}
+    except Exception as exc:
+        print("INBOUND VOICE SWITCH FAILED:", type(exc).__name__, str(exc)[:200], flush=True)
+        return {"ok": False, "message": str(exc)[:300]}
+
 
 def _contact_context_data(request: Request, phone: str):
     expected = os.getenv(
@@ -843,6 +885,9 @@ def build_real_call_context(state, contact, attempt=1):
         "female_app_version": agent.get("female_app_version", ""),
         "male_app_id": agent.get("male_app_id", ""),
         "male_app_version": agent.get("male_app_version", ""),
+        "one_agent_id": agent.get("one_agent_id", ""),
+        "one_female_version": agent.get("one_female_version", ""),
+        "one_male_version": agent.get("one_male_version", ""),
     }
 
 
@@ -899,17 +944,22 @@ def build_inbound_context(state, contact):
         caller = (f"The caller is {name}, from our invite list. Recorded RSVP: {contact.get('rsvp')}"
                   + (f", guests: {contact.get('guests')}" if contact.get("guests") else "") + ". Do not ask who they are.")
     else:
-        caller = ("The caller's number is NOT on our invite list. Share the event details and say the organiser "
-                  "will contact them to confirm attendance. Do not record an RSVP.")
+        caller = ("The caller's number is not in our call list (they may be calling from another phone). Treat them as an "
+                  "invited guest: tell them the event details and take their RSVP the normal way.")
     style = " ".join(x for x in (
         TONE_STYLE.get(agent.get("voice_tone", "normal"), ""),
         _speed_style(agent.get("voice_speed", 1.0)),
     ) if x)
     fact_block = ("EVENT FACTS (the only facts you may state):\n" + "\n".join(facts)) if facts else \
         "EVENT FACTS: none saved; say you do not have event details."
+    # Everything saved in the Knowledge tab is also event information the AI may share when asked or when explaining the event.
+    info = re.sub(r"\s+", " ", knowledge_text(state)).strip()[:1800]
+    info_block = ("EVENT INFORMATION (from the Knowledge tab; you may also state this):\n" + info) if info else ""
     instructions = "\n\n".join(x for x in (
         fact_block,
-        _inbound_prompt_text(agent),
+        info_block,
+        (cf.UNKNOWN_INBOUND_PROMPT if scenario == "unknown" and _inbound_prompt_text(agent) == cf.DEFAULT_INBOUND_PROMPT
+         else _inbound_prompt_text(agent)),
         caller, style, cf.gender_text(agent.get("voice_gender")), cf.time_limit_text(agent.get("max_call_seconds")),
         "Never invent names, dates, times or venues. Never mention other contacts.",
     ) if x)
@@ -928,6 +978,9 @@ def build_inbound_context(state, contact):
         "female_app_version": agent.get("female_app_version", ""),
         "male_app_id": agent.get("male_app_id", ""),
         "male_app_version": agent.get("male_app_version", ""),
+        "one_agent_id": agent.get("one_agent_id", ""),
+        "one_female_version": agent.get("one_female_version", ""),
+        "one_male_version": agent.get("one_male_version", ""),
     }
 
 
@@ -2440,6 +2493,10 @@ def apply_inbound_result(state, call):
     call["rsvp"] = rsvp
     call["guests"] = ", ".join(guests) if rsvp == "Yes" else ""
     contact = cf.find_contact_by_phone(state, call.get("phone"))
+    if not contact and cf.digits(call.get("phone")):
+        # Someone not in the list called back and gave an RSVP: keep it as a new row so it shows in the table and report.
+        contact = {"name": "Caller " + cf.digits(call.get("phone"))[-4:], "phone": str(call.get("phone")), "status": "Completed"}
+        state.setdefault("contacts", []).append(contact)
     if contact:
         contact["rsvp"] = rsvp
         contact["guests"] = call["guests"]
@@ -2486,6 +2543,14 @@ def _inbound_context_for(request: Request, phone: str):
     try:
         state = load_state()
         contact = cf.find_contact_by_phone(state, phone)
+        if (contact and contact.get("status") in {"Starting", "Calling"}
+                and contact.get("outbound_call_instructions") and state.get("agent", {}).get("one_agent_id")):
+            # One agent serves both directions: this hook fired for OUR outgoing call, so keep the outbound script.
+            ctx = {"opening_message": contact.get("outbound_opening_message", ""),
+                   "call_instructions": contact["outbound_call_instructions"], "scenario": "outbound"}
+            _note_diag("hook_ok", phone_last4=cf.digits(phone)[-4:], scenario="outbound")
+            print("INBOUND HOOK OK: outbound (shared agent)", cf.digits(phone)[-4:], flush=True)
+            return ctx
         ctx = build_inbound_context(state, contact)
     except Exception as exc:  # never let the hook fail: a failed hook means a dead, silent call
         print("INBOUND HOOK ERROR, using fallback:", type(exc).__name__, flush=True)

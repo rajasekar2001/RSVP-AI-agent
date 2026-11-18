@@ -24,6 +24,18 @@ DEFAULT_INBOUND_PROMPT = (
     "7. If you hear nothing for a few seconds, say once: Hello, can you hear me? Then wait. Never end the call just because of a short silence.\n"
     "8. Close with one short sentence and end the call."
 )
+UNKNOWN_INBOUND_PROMPT = (
+    "This is an INCOMING call from someone whose number is not in our call list. They may be an invited guest calling back.\n"
+    "The greeting has already been spoken and asked for their name; do not repeat it. Wait for the answer.\n"
+    "1. After they give their name, greet them by name and tell them the event details from the EVENT FACTS and EVENT INFORMATION: "
+    "event name, date, time, venue and what the event is about. Say it in two or three short sentences, not one.\n"
+    "2. Then ask: Will you be attending the event?\n"
+    "3. If they ask a question, answer ONLY from the EVENT FACTS and EVENT INFORMATION; if it is not listed say you do not have it.\n"
+    "4. RSVP Yes: ask How many additional guests will you bring? and, if more than zero, Could you tell me their names? Collect every name.\n"
+    "5. RSVP No: thank them politely and end the call.\n"
+    "6. Repeat their RSVP and guest names once to confirm, then close with one short sentence and end the call.\n"
+    "7. If you hear nothing for a few seconds, say once: Hello, can you hear me? Then wait."
+)
 LEGACY_INBOUND_PROMPT_V1 = (
     "This is an INCOMING call: the person is calling us back (they missed or cut our earlier call).\n"
     "The greeting has already been spoken; do not repeat it.\n"
@@ -309,7 +321,8 @@ def inbound_answered_greeting():
 
 
 def inbound_unknown_greeting():
-    return "Hello! Thanks for calling. I'm the AI assistant for {event_intro}. {event_details} How can I help you?"
+    return ("Hello! Thanks for calling. I'm the AI assistant for {event_intro}. {event_details} "
+            "I can tell you more about the event and note your RSVP. May I have your name?")
 
 
 # --------------------------------------------------------------------- automatic retries
