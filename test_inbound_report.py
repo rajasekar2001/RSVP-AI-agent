@@ -5,6 +5,7 @@ os.environ.update(SARVAM_API_KEY="k", SARVAM_ORG_ID="o", SARVAM_WORKSPACE_ID="w"
                   PUBLIC_BASE_URL="https://example.onrender.com", SARVAM_WEBHOOK_TOKEN="t",
                   SARVAM_INSTRUCTIONS_TOKEN="ins", RSVP_RECORDINGS_ACCESS_TOKEN="rec")
 import app, call_features as cf
+app.INBOUND_SAME_DEFAULT = False  # these tests cover the older call-back scenarios
 from fastapi.testclient import TestClient
 
 app.STATE_FILE = app.Path(tempfile.mkdtemp()) / "state.json"

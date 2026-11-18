@@ -101,6 +101,7 @@
             <small>The AI is told to finish within this time. Calls that run longer are flagged "over limit" in the table and report.</small>
             <strong style="margin-top:6px">Automatic retry for unanswered calls</strong>
             <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="retryEnabled" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('retry_enabled', True) else '' }}> Call again when a call is not answered (busy / no answer / failed)</label>
+            <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="inboundSame" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('inbound_same_as_outbound', True) else '' }}> <b>Incoming calls work exactly like outgoing calls</b> (same Greeting, Instructions, voice and language; the boxes below are then not used)</label>
             <label style="display:flex;gap:8px;align-items:center;margin:0"><input id="retryIncomplete" type="checkbox" style="width:auto" {{ 'checked' if state.agent.get('retry_incomplete', True) else '' }}> Also call again when the person answered but the call ended without an RSVP (Awaiting RSVP result)</label>
             <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">
               <div><label for="retryMinutes">Retry after (minutes)</label><input id="retryMinutes" type="number" min="5" max="1440" step="5" value="{{ state.agent.get('retry_interval_minutes', 60) }}" style="padding:9px;border-radius:8px;border:1px solid #ddd;width:110px"></div>

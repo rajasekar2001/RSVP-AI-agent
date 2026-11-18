@@ -99,6 +99,7 @@ function voicePrefs() {
         inbound_prompt: $("#inboundPromptBox") ? $("#inboundPromptBox").value : undefined,
         max_call_seconds: $("#maxCallSeconds") ? Number($("#maxCallSeconds").value || 50) : undefined,
         retry_enabled: $("#retryEnabled") ? $("#retryEnabled").checked : undefined,
+        inbound_same_as_outbound: $("#inboundSame") ? $("#inboundSame").checked : undefined,
         retry_incomplete: $("#retryIncomplete") ? $("#retryIncomplete").checked : undefined,
         retry_interval_minutes: $("#retryMinutes") ? Number($("#retryMinutes").value || 60) : undefined,
         retry_max_attempts: $("#retryMax") ? Number($("#retryMax").value || 5) : undefined,
@@ -125,6 +126,7 @@ function syncVoicePrefs() {
     if ($("#inboundPromptBox")) $("#inboundPromptBox").value = state.agent?.inbound_prompt || "";
     if ($("#maxCallSeconds")) $("#maxCallSeconds").value = state.agent?.max_call_seconds || 50;
     if ($("#retryEnabled")) $("#retryEnabled").checked = state.agent?.retry_enabled !== false;
+    if ($("#inboundSame")) $("#inboundSame").checked = state.agent?.inbound_same_as_outbound !== false;
     if ($("#retryIncomplete")) $("#retryIncomplete").checked = state.agent?.retry_incomplete !== false;
     if ($("#retryMinutes")) $("#retryMinutes").value = state.agent?.retry_interval_minutes || 60;
     if ($("#retryMax")) $("#retryMax").value = state.agent?.retry_max_attempts || 5;

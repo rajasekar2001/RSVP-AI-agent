@@ -66,6 +66,7 @@ for n, p in (("", "9876543210"), ("Raja", ""), ("Raja", "abc"), ("Raja", "123"),
 # ---- API
 from fastapi.testclient import TestClient
 import app
+app.INBOUND_SAME_DEFAULT = False  # older call-back scenario tests below
 c = TestClient(app.app)
 c.post("/api/reset")
 r = c.post("/api/contacts", files={"file": ("x.xlsx", io.BytesIO(open(__file__, "rb").read()), "text/plain")}); assert r.status_code == 400
@@ -170,3 +171,91 @@ assert "Call the invited guests" not in ctx["call_instructions"] and "INCOMING c
 st["agent"]["inbound_prompt"] = "Custom call-back rules: be brief."
 assert "Custom call-back rules" in app.build_inbound_context(st, None)["call_instructions"]
 print("inbound prompt guard passed")
+
+# ---- incoming calls: voice follows the dashboard choice by switching the inbound deployment's agent version
+import sarvam_voice
+from unittest import mock
+sarvam_voice.SARVAM_API_KEY, sarvam_voice.SARVAM_ORG_ID, sarvam_voice.SARVAM_WORKSPACE_ID = "k", "org", "ws"
+sarvam_voice.SARVAM_PHONE_NUMBER = "+917965850008"
+class R:
+    def __init__(self, code, body=None): self.status_code, self._b, self.content = code, body or {}, b"x"
+    def json(self): return self._b
+DEP = {"deployment_id": "dep-1", "name": "RSVP-male", "app_id": "RSVP-male-Inbound", "app_version": 1,
+       "status": "active", "phone_numbers": ["+917965850008"], "channel_direction": "inbound"}
+calls = []
+def fake(method, url, **kw):
+    calls.append((method, url, kw.get("json")))
+    if method == "GET": return R(200, {"items": [{"deployment_id": "x", "phone_numbers": ["+911111111111"], "channel_direction": "inbound"}, DEP]})
+    return R(200, {})
+with mock.patch.object(sarvam_voice.requests, "request", side_effect=fake):
+    assert "now use" in sarvam_voice.set_inbound_voice_version("2")
+    assert calls[-1][0] == "PATCH" and calls[-1][1].endswith("/deployments/dep-1") and calls[-1][2] == {"app_version": 2}
+    DEP["app_version"] = 2; n = len(calls)
+    assert "already use" in sarvam_voice.set_inbound_voice_version("2") and len(calls) == n + 1   # no PATCH needed
+with mock.patch.object(sarvam_voice.requests, "request", side_effect=lambda m, u, **k: R(200, {"items": []})):
+    try: sarvam_voice.set_inbound_voice_version("2"); raise SystemExit("should fail")
+    except RuntimeError as e: assert "No incoming-call" in str(e)
+with mock.patch.object(sarvam_voice.requests, "request", side_effect=lambda m, u, **k: R(403, {"detail": "forbidden"}) if m == "GET" else R(200)):
+    try: sarvam_voice.set_inbound_voice_version("2"); raise SystemExit("should fail")
+    except RuntimeError as e: assert "403" in str(e)
+# dashboard save -> switches; Default voice or empty version -> nothing happens
+c.post("/api/reset")
+with mock.patch.object(sarvam_voice, "set_inbound_voice_version", return_value="switched") as sw:
+    r = c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "female", "inbound_female_version": "3", "inbound_male_version": "4"}).json()
+    assert r["inbound_voice"] == {"ok": True, "message": "switched"} and sw.call_args.args == ("3",)
+    c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "male"}); assert sw.call_args.args == ("4",)
+    n = sw.call_count
+    r = c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": ""}).json(); assert sw.call_count == n and r["inbound_voice"]["ok"] is None
+with mock.patch.object(sarvam_voice, "set_inbound_voice_version", side_effect=RuntimeError("boom")):
+    r = c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "voice_gender": "male"}).json()
+    assert r["ok"] and r["inbound_voice"] == {"ok": False, "message": "boom"}
+assert c.post("/api/build", json={"prompt": app.DEFAULT_PROMPT, "inbound_male_version": "x"}).status_code == 400
+assert 'id="inboundFemaleVersion"' in c.get("/").text
+c.post("/api/reset")
+print("inbound voice switch passed")
+
+
+def _test_one_agent_mode():
+    import sarvam_voice as sv
+    ag = {"one_agent_id": "RSVP-male-I-c96ab5c4-919e", "one_male_version": "3", "one_female_version": "4",
+          "female_app_id": "other", "female_app_version": "9"}
+    assert sv.voice_agent("male", ag) == ("RSVP-male-I-c96ab5c4-919e", "3", "")
+    assert sv.voice_agent("female", ag) == ("RSVP-male-I-c96ab5c4-919e", "4", "")
+    print("one-agent voice pick ok")
+
+_test_one_agent_mode()
+
+
+def _test_one_agent_hook():
+    import os, app as A
+    from unittest import mock
+    os.environ["SARVAM_WEBHOOK_TOKEN"] = "tok"
+    st = {"agent": {"one_agent_id": "RSVP-x-abc"}, "contacts": [
+        {"name": "Raja", "phone": "+919000000001", "status": "Calling",
+         "outbound_opening_message": "Hello outbound", "outbound_call_instructions": "OUT SCRIPT"}]}
+    with mock.patch.object(A, "load_state", return_value=st), mock.patch.object(A, "_hook_token_ok", return_value=True):
+        ctx = A._inbound_context_for(None, "+919000000001")
+    assert ctx["call_instructions"] == "OUT SCRIPT" and ctx["opening_message"] == "Hello outbound", ctx
+    print("one-agent hook keeps outbound script ok")
+
+_test_one_agent_hook()
+
+
+def _test_inbound_like_outbound():
+    app.INBOUND_SAME_DEFAULT = True
+    st = {"agent": {"greeting": "Hello! I'm an AI assistant calling about our event on {date}. Am I speaking with {name}?",
+                    "prompt": "Event date: Friday\nCall the invited guests and confirm attendance.",
+                    "voice_language": "en-IN"},
+          "contacts": [{"name": "Raja", "phone": "+919000000001", "status": "Ready"}], "knowledge": []}
+    known = app.build_inbound_context(st, st["contacts"][0])
+    out = app.build_real_call_context(st, st["contacts"][0], 1)
+    assert known["opening_message"] == out["opening_message"], (known["opening_message"], out["opening_message"])
+    assert "Call the invited guests and confirm attendance." in known["call_instructions"]
+    assert "Speak ONLY in English" in known["call_instructions"]
+    unk = app.build_inbound_context(st, None)
+    assert "{name}" not in unk["opening_message"] and "Am I speaking with" not in unk["opening_message"]
+    assert unk["opening_message"].endswith("May I know your name?"), unk["opening_message"]
+    app.INBOUND_SAME_DEFAULT = False
+    print("inbound-like-outbound ok")
+
+_test_inbound_like_outbound()

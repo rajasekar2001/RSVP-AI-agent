@@ -605,6 +605,8 @@ async def build(request: Request):
         agent["inbound_greeting"] = str(data["inbound_greeting"] or "").strip()[:600]
     if "inbound_prompt" in data and str(data["inbound_prompt"] or "").strip():
         agent["inbound_prompt"] = str(data["inbound_prompt"]).strip()[:4000]
+    if "inbound_same_as_outbound" in data:
+        agent["inbound_same_as_outbound"] = bool(data["inbound_same_as_outbound"])
     if "max_call_seconds" in data:
         agent["max_call_seconds"] = cf.clamp_seconds(data["max_call_seconds"])
     if any(k in data for k in cf.RETRY_DEFAULTS):
@@ -914,9 +916,79 @@ def _inbound_prompt_text(agent):
     return saved
 
 
+INBOUND_SAME_DEFAULT = True  # incoming calls behave like outgoing calls unless switched off in the dashboard
+LANGUAGE_NAMES = {"en-IN": "English", "ta-IN": "Tamil", "hi-IN": "Hindi", "te-IN": "Telugu", "ml-IN": "Malayalam",
+                  "kn-IN": "Kannada", "mr-IN": "Marathi", "bn-IN": "Bengali", "gu-IN": "Gujarati", "pa-IN": "Punjabi",
+                  "od-IN": "Odia"}
+
+
+def build_inbound_like_outbound(state, contact):
+    """An incoming call that behaves EXACTLY like our outgoing call: the same dashboard Greeting, the same
+    dashboard Instructions, voice, tone, speed and call limit, and the same language (never switching to the caller's)."""
+    agent = state.get("agent", {})
+    name = str((contact or {}).get("name", "")).strip()
+    subject, event_sentence, event_name = _spoken_event_sentence(state)
+    _, facts = intro_event_details(state)
+    template = str(agent.get("greeting", "")).strip() or (
+        "Hello! I'm an AI assistant calling about {event_intro}. {event_details} Am I speaking with {name}?")
+    template = template.replace("{event_intro}", subject)
+    if not name:
+        # Unknown caller: drop the "Am I speaking with {name}?" sentence and ask their name instead.
+        template = re.sub(r"[^.!?]*\{name\}[^.!?]*[.!?]?", "", template).strip()
+    opening = render_greeting(template, name or "there", subject, event_sentence, event_name, facts)
+    if not name:
+        opening = (opening + " May I know your name?").strip()
+    language = LANGUAGE_NAMES.get(str(agent.get("voice_language", "") or ""), "English")
+    style = " ".join(x for x in (
+        TONE_STYLE.get(agent.get("voice_tone", "normal"), ""),
+        _speed_style(agent.get("voice_speed", 1.0)),
+    ) if x)
+    rules = (
+        "The person called us back. "
+        + (f"Their name is {name}. " if name else "Their name is not known yet; after they tell you, use it. ")
+        + "The opening line has ALREADY been spoken; never repeat it or introduce yourself again. Ask one question at a time "
+        "and wait. Follow the instructions above exactly as on an outgoing call: ask whether they will attend, then the number "
+        "of additional guests and every guest's name, then repeat and confirm. A Yes to the identity question is NOT an "
+        "attendance answer. Never invent names, dates, times or venues. Never mention other contacts. "
+        f"Speak ONLY in {language}. Do not switch language even if the caller speaks another one; if they do, keep answering "
+        f"in {language}."
+    )
+    if contact and contact.get("rsvp") and contact.get("status") == "Completed":
+        rules += (f" Their RSVP is already recorded as {contact.get('rsvp')}"
+                  + (f" with guests {contact.get('guests')}" if contact.get("guests") else "")
+                  + ". Say so and ask only whether they want to change it.")
+    info = re.sub(r"\s+", " ", knowledge_text(state)).strip()[:1800]
+    info_block = ("EVENT INFORMATION (you may state this when asked):\n" + info) if info else ""
+    fact_block = ("EVENT FACTS (the only facts you may state):\n" + "\n".join(facts)) if facts else \
+        "EVENT FACTS: none saved; say you do not have event details."
+    return {
+        "contact_name": name,
+        "event_label": event_name,
+        "event_details": event_sentence,
+        "opening_message": opening,
+        "call_instructions": "\n\n".join(x for x in (
+            str(agent.get("prompt", "")).strip(), fact_block, info_block, style, cf.gender_text(agent.get("voice_gender")),
+            cf.time_limit_text(agent.get("max_call_seconds")), rules) if x),
+        "language": str(agent.get("voice_language", "") or ""),
+        "known_caller": bool(contact),
+        "scenario": inbound_scenario(contact),
+        "speaker_name": _speaker_for(agent),
+        "speech_pace": agent.get("voice_speed", 1.0),
+        "female_app_id": agent.get("female_app_id", ""),
+        "female_app_version": agent.get("female_app_version", ""),
+        "male_app_id": agent.get("male_app_id", ""),
+        "male_app_version": agent.get("male_app_version", ""),
+        "one_agent_id": agent.get("one_agent_id", ""),
+        "one_female_version": agent.get("one_female_version", ""),
+        "one_male_version": agent.get("one_male_version", ""),
+    }
+
+
 def build_inbound_context(state, contact):
     """Greeting + instructions for a person CALLING US BACK. `contact` is None for unknown callers."""
     agent = state.get("agent", {})
+    if agent.get("inbound_same_as_outbound", INBOUND_SAME_DEFAULT):
+        return build_inbound_like_outbound(state, contact)
     name = str((contact or {}).get("name", "")).strip()
     subject, event_sentence, event_name = _spoken_event_sentence(state)
     _, facts = intro_event_details(state)
