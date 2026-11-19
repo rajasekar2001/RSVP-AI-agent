@@ -29,7 +29,9 @@ from sarvam_voice import config_summary, sarvam_configured, start_sarvam_outboun
 load_dotenv()
 
 BASE = Path(__file__).resolve().parent
-STATE_FILE = BASE / "data" / "state.json"
+# RSVP_DATA_DIR lets the data live outside the code folder (a persistent disk), so re-uploading or redeploying the
+# code never overwrites who has already answered.
+STATE_FILE = Path(os.getenv("RSVP_DATA_DIR", "").strip() or (BASE / "data")) / "state.json"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 app = FastAPI(title="RSVP Agent — Sarvam Voice Agents", version="4.0")
@@ -142,7 +144,7 @@ def get_next_contact(state):
 def get_next_real_contact(state):
     """One-pass real campaign: call only contacts that are Ready/Queued."""
     for contact in state["contacts"]:
-        if contact.get("status", "Ready") in {"Ready", "Queued"}:
+        if contact.get("status", "Ready") in {"Ready", "Queued"} and not str(contact.get("rsvp") or "").strip():
             return contact
     return None
 
@@ -437,6 +439,8 @@ def start_real_contact_call(contact):
         real_contact = next((x for x in state["contacts"] if x.get("phone") == contact.get("phone") and x.get("name") == contact.get("name")), None)
         if not real_contact or real_contact.get("status") not in {"Ready", "Queued"}:
             return None
+        if str(real_contact.get("rsvp") or "").strip():
+            return None  # already answered: never call this person again
         attempt = int(real_contact.get("attempts") or 0) + 1
         call_context = build_real_call_context(state, real_contact, attempt)
         real_contact["status"] = "Starting"
@@ -503,7 +507,7 @@ def schedule_retry(contact, state):
 def run_due_retry():
     """Place at most one due retry call (calls run one at a time, like the main campaign)."""
     state = load_state()
-    if not state.get("campaign_started", True):
+    if not state.get("campaign_started"):
         return None
     settings = cf.retry_settings(state.get("agent"))
     if not settings["retry_enabled"] or not sarvam_configured():
@@ -1921,6 +1925,19 @@ async def _reconciliation_watchdog():
 
 @app.on_event("startup")
 async def start_reconciliation_watchdog():
+    # A restart, redeploy or wake-up must NEVER place calls by itself: calling starts only when you click "☎ Real Campaign".
+    try:
+        with STATE_LOCK:
+            boot_state = load_state()
+            if boot_state.get("campaign_started"):
+                boot_state["campaign_started"] = False
+                for c in boot_state.get("contacts", []):
+                    if c.get("status") in {"Starting", "Queued"}:
+                        c["status"] = "Ready"
+                save_state(boot_state)
+                print("STARTUP: campaign paused; click Real Campaign to continue calling", flush=True)
+    except Exception as exc:
+        print("STARTUP RESET ERROR:", type(exc).__name__, flush=True)
     app.state.reconcile_task = asyncio.create_task(_reconciliation_watchdog())
     app.state.retry_task = asyncio.create_task(_retry_scheduler())
 

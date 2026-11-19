@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .vscode/
 data/state.json
+
+# runtime data and secrets: never commit (a redeploy would restore old call state and call people again)
+data/
+.env

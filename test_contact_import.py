@@ -273,3 +273,26 @@ def _test_inbound_phone_fallback():
     print("inbound phone fallback ok")
 
 _test_inbound_phone_fallback()
+
+
+def _test_restart_never_calls():
+    import asyncio
+    st = {"campaign_started": True, "agent": {}, "knowledge": [],
+          "contacts": [{"name": "Raja", "phone": "+919000000001", "status": "Starting", "attempts": 1},
+                       {"name": "Meena", "phone": "+919000000002", "status": "Ready", "rsvp": "Yes"},
+                       {"name": "Ravi", "phone": "+919000000003", "status": "Ready"}]}
+    saved = {}
+    from unittest import mock
+    async def boot():
+        with mock.patch.object(app, "load_state", return_value=st), \
+             mock.patch.object(app, "save_state", side_effect=lambda s: saved.update(s)), \
+             mock.patch.object(app, "_reconciliation_watchdog", new=lambda: asyncio.sleep(0)), \
+             mock.patch.object(app, "_retry_scheduler", new=lambda: asyncio.sleep(0)):
+            await app.start_reconciliation_watchdog()
+    asyncio.run(boot())
+    assert saved["campaign_started"] is False and saved["contacts"][0]["status"] == "Ready"
+    assert app.get_next_real_contact({"contacts": st["contacts"]})["name"] == "Raja"
+    assert app.get_next_real_contact({"contacts": st["contacts"][1:]})["name"] == "Ravi"   # Meena already answered
+    print("restart never calls ok")
+
+_test_restart_never_calls()
