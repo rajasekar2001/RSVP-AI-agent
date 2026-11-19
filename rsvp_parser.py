@@ -38,6 +38,25 @@ STOP_NAME_WORDS = {"yes", "no", "sorry", "okay", "ok", "hmm", "please", "thanks"
                    "myself", "me", "i", "dont", "don't", "not", "sure", "repeat", "what", "again"}
 
 
+# --- Tamil / Hindi (calls are often spoken in the guest's language; Sarvam stores that text) ---------
+ATTEND_Q_IN = re.compile(r"(வருவீ|வருவ[ீி]ங்க|வர்றீ|வரு[வ]ீர்|வர முடி|வரமுடி|கலந்து|பங்கேற்|आएंगे|आओगे|आ पाएंगे|आ सकते|शामिल)")
+GUEST_COUNT_Q_IN = re.compile(r"(யாராவது|கூட வேற|எத்தனை|விருந்தினர்|guest|கெஸ்ட்|मेहमान|साथ में|और कोई)", re.I)
+GUEST_NAME_Q_IN = re.compile(r"(பெயர்|பேரு|பேர்|नाम)")
+CONFIRM_Q_IN = re.compile(r"(சரியா|சரிதானா|சரிதானே|சரியாக|सही है|ठीक है\?)")
+YES_IN = re.compile(r"(ஆமா|ஆம்|ஆமாம்|எஸ்|\bஆ\s?எஸ்|வருவேன்|வருவோம்|வரோம்|வரேன்|வரோ|வருகிறேன்|வருகிறோம்|வந்துடுவ|வந்திடுவ|"
+                    r"கண்டிப்பா|நிச்சயம|ஓகே|சரி வர|हाँ|हां|जी हाँ|जी|आऊंगा|आऊँगा|आएंगे|आयेंगे|ज़रूर|जरूर)")
+NO_IN = re.compile(r"(இல்ல|இல்லை|மாட்டேன்|மாட்டோம்|முடியாது|வரல|வர முடியல|வரமுடியல|नहीं|नही|ना आ|नहीं आ)")
+MAYBE_IN = re.compile(r"(தெரியல|பார்க்கலாம்|பாக்கலாம்|சொல்ல முடியாது|शायद|देखते हैं)")
+NO_ONE_IN = re.compile(r"(யாரும் இல்ல|யாருமில்ல|யாரும் வரல|தனியா|நான் மட்டும்|நான் மட்டுமே|कोई नहीं|अकेला|अकेली|सिर्फ मैं)")
+NUMBER_IN = (
+    ("ஒருத்த", 1), ("ஒருவர்", 1), ("ஒரு ", 1), ("ஒண்ணு", 1), ("ஒன்று", 1), ("एक", 1),
+    ("இரண்டு", 2), ("ரெண்டு", 2), ("இருவர்", 2), ("दो", 2),
+    ("மூன்று", 3), ("மூணு", 3), ("तीन", 3), ("நான்கு", 4), ("நாலு", 4), ("चार", 4),
+    ("ஐந்து", 5), ("அஞ்சு", 5), ("पाँच", 5), ("ஆறு", 6), ("ஏழு", 7), ("எட்டு", 8), ("ஒன்பது", 9), ("பத்து", 10),
+)
+INDIC = re.compile(r"[\u0B80-\u0BFF\u0900-\u097F]")
+
+
 def _text(row):
     return str(row.get("en_text") or row.get("text") or row.get("content") or "").strip()
 
@@ -48,8 +67,14 @@ def _is_agent(row):
 
 def _yes_no(answer):
     """Return 'Yes', 'No', 'Maybe' or ''."""
-    if MAYBE.search(answer):
+    if MAYBE.search(answer) or MAYBE_IN.search(answer):
         return "Maybe"
+    if INDIC.search(answer):
+        # Check refusals first: "வர முடியாது" contains the same letters as a yes.
+        if NO_IN.search(answer) and not re.search(r"(ஆமா|ஆம்|எஸ்|हाँ|हां)", answer):
+            return "No"
+        if YES_IN.search(answer):
+            return "Yes"
     has_yes, has_no = bool(YES.search(answer)), bool(NO.search(answer))
     if has_no and not has_yes:
         return "No"
@@ -64,6 +89,15 @@ def _count(answer):
     m = re.search(r"\b(\d{1,2})\b", answer)
     if m:
         return int(m.group(1))
+    if NO_ONE_IN.search(answer):
+        return 0
+    if INDIC.search(answer):
+        padded = answer + " "
+        for word, value in NUMBER_IN:
+            if word in padded:
+                return value
+        if NO_IN.search(answer):
+            return 0
     low = answer.lower()
     if re.search(r"\b(just me|only me|myself|alone|by myself|no guests?|no one|nobody|none)\b", low):
         return 0
@@ -90,6 +124,37 @@ def _names(answer):
     return names
 
 
+# A caller correcting a name: "not Manithan, Manoj" / "மனிதன் இல்ல மனோஜ்" / "मनीष नहीं मनोज".
+_WORD = r"[A-Za-z\u0B80-\u0BFF\u0900-\u097F][A-Za-z'\u0B80-\u0BFF\u0900-\u097F.-]*"
+CORRECTION = (
+    re.compile(rf"\b(?:it'?s\s+|it\s+is\s+|that'?s\s+)?not\s+({_WORD})\s*[,.;-]?\s*(?:it'?s\s+|it\s+is\s+|but\s+|rather\s+|i\s+said\s+|its\s+)?({_WORD})\s*[.!?]*$", re.I),
+    re.compile(rf"({_WORD})\s+(?:இல்லை|இல்ல)\s*[,.;-]?\s*({_WORD})\s*[.!?]*$"),
+    re.compile(rf"({_WORD})\s+(?:नहीं|नही)\s*[,.;-]?\s*({_WORD})\s*[.!?]*$"),
+)
+
+
+def _correct_name(guests, text):
+    """If `text` corrects a guest name, fix `guests` in place and return True."""
+    if not guests:
+        return False
+    for rx in CORRECTION:
+        m = rx.search(text.strip())
+        if not m:
+            continue
+        wrong, right = m.group(1).strip(".-"), m.group(2).strip(".-")
+        if right.lower() in STOP_NAME_WORDS or wrong.lower() in STOP_NAME_WORDS:
+            continue
+        right = right.capitalize() if right.islower() else right
+        for i, g in enumerate(guests):
+            if g.lower() == wrong.lower() or g.lower().startswith(wrong.lower()[:4]) or wrong.lower().startswith(g.lower()[:4]):
+                guests[i] = right
+                break
+        else:
+            guests[-1] = right  # the wrong word was transliterated differently: the correction replaces the latest name
+        return True
+    return False
+
+
 def extract_rsvp_from_transcript(transcript):
     """Return {"rsvp": "Yes"|"No"|"Maybe"|"", "guests": [names], "guest_count": int|None, "confident": bool}."""
     rows = [r for r in (transcript or []) if isinstance(r, dict) and _text(r)]
@@ -98,9 +163,16 @@ def extract_rsvp_from_transcript(transcript):
     for row in rows:
         text = _text(row)
         if _is_agent(row):
-            if CONFIRM_Q.search(text) and not ATTEND_Q.search(text):
+            asks = "?" in text or bool(INDIC.search(text))  # Tamil questions often end without a "?"
+            attend = bool(ATTEND_Q.search(text) or ATTEND_Q_IN.search(text))
+            guest_q = bool(GUEST_COUNT_Q_IN.search(text))
+            if (CONFIRM_Q.search(text) or CONFIRM_Q_IN.search(text)) and not attend:
                 state = "confirm"
-            elif ATTEND_Q.search(text) and not rsvp:
+            elif GUEST_NAME_Q_IN.search(text) and asks and (guest_q or state in {"count", "names"} or guests or count):
+                state = "names"
+            elif guest_q and asks and rsvp and not attend:
+                state = "count"
+            elif attend and not rsvp:
                 state = "attend"
             elif GUEST_NAME_Q.search(text) and re.search(r"guest|friend|first|second|third|their|his|her|next", text, re.I) \
                     and "?" in text:
@@ -109,6 +181,8 @@ def extract_rsvp_from_transcript(transcript):
                 state = "count"
             continue
         # user turn
+        if rsvp == "Yes" and guests and _correct_name(guests, text):
+            continue  # "not Manithan, Manoj": the corrected name replaces the wrong one
         if state == "attend" and not rsvp:
             rsvp = _yes_no(text) or rsvp
             if rsvp in {"No", "Maybe"}:
