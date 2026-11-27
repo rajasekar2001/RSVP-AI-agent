@@ -432,21 +432,32 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
     }
 
 def set_inbound_voice_version(app_version):
-    """Point the inbound deployment at a committed agent version."""
+    """Pause the inbound deployment, change its version, then resume it."""
+    deployment_id = os.environ["SARVAM_DEPLOYMENT_ID"].strip()
     url = (
         "https://apps.sarvam.ai/api/app-authoring/v1"
         f"/orgs/{os.environ['SARVAM_ORG_ID']}"
         f"/workspaces/{os.environ['SARVAM_WORKSPACE_ID']}"
-        f"/deployments/{os.environ['SARVAM_DEPLOYMENT_ID']}"
+        f"/deployments/{deployment_id}"
     )
-    response = requests.patch(
-        url,
-        headers={"X-API-Key": os.environ["SARVAM_API_KEY"]},
-        json={"app_version": int(app_version)},
-        timeout=20,
-    )
-    if not response.ok:
-        raise RuntimeError(
-            f"Sarvam {response.status_code} (version sent: {app_version}): {response.text}"
+    headers = {"X-API-Key": os.environ["SARVAM_API_KEY"]}
+    version = int(app_version)
+
+    def call(method, target, body):
+        response = requests.request(
+            method, target, headers=headers, json=body, timeout=20
         )
-    return response.json()
+        if not response.ok:
+            raise RuntimeError(
+                f"Sarvam {response.status_code} on {method} {body}: {response.text}"
+            )
+        return response.json()
+
+    call("PUT", f"{url}/status", {"action": "pause"})
+    try:
+        result = call("PATCH", url, {"app_version": version})
+    finally:
+        call("PUT", f"{url}/status", {"action": "resume"})
+
+    print(f"INBOUND VOICE SWITCHED to version {version}", flush=True)
+    return result
