@@ -445,5 +445,8 @@ def set_inbound_voice_version(app_version):
         json={"app_version": int(app_version)},
         timeout=20,
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(
+            f"Sarvam {response.status_code} (version sent: {app_version}): {response.text}"
+        )
     return response.json()
