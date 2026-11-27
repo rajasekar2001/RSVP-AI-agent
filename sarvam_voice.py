@@ -1,16 +1,13 @@
-
 import os
 import re
 import logging
 from urllib.parse import urlparse, quote
-
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger("rsvp.sarvam")
-
 
 def setting(name, default=""):
     return os.getenv(name, default).strip()
@@ -433,3 +430,20 @@ def start_sarvam_outbound(phone: str, contact_name: str, context: dict | None = 
         "app_id": chosen_app_id,
         "raw": data,
     }
+
+def set_inbound_voice_version(app_version):
+    """Point the inbound deployment at a committed agent version."""
+    url = (
+        "https://apps.sarvam.ai/api/app-authoring/v1"
+        f"/orgs/{os.environ['SARVAM_ORG_ID']}"
+        f"/workspaces/{os.environ['SARVAM_WORKSPACE_ID']}"
+        f"/deployments/{os.environ['SARVAM_DEPLOYMENT_ID']}"
+    )
+    response = requests.patch(
+        url,
+        headers={"X-API-Key": os.environ["SARVAM_API_KEY"]},
+        json={"app_version": int(app_version)},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
